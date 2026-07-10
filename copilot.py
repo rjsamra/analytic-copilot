@@ -3,7 +3,7 @@ from streamlit_extras.add_vertical_space import add_vertical_space
 from plotly.graph_objects import Figure as PlotlyFigure
 from matplotlib.figure import Figure as MatplotFigure
 import pandas as pd
-from copilot_utils import CODER2, CODER_AVAILABLE_FUNCTIONS2, CODER_FUNCTIONS_SPEC2, Smart_Agent,extract_sql_query
+from copilot_utils import CODER2, CODER_AVAILABLE_FUNCTIONS2, CODER_FUNCTIONS_SPEC2, Smart_Agent, extract_sql_query, message_to_dict
 
 
 # Initialize smart agent with CODER1 persona
@@ -23,11 +23,11 @@ st.markdown(styl, unsafe_allow_html=True)
 MAX_HIST= 3
 with st.sidebar:
 
-    st.title('Analytic AI Copilot')
+    st.title('Generative Business Intelligence Assistant')
     st.markdown('''
     ''')
     st.checkbox("Show AI Assistant's internal thought process", key='show_internal_thoughts', value=False)
-    st.checkbox("Use GPT-4-vision to comment on graph", key='use_gpt4v', value=False)
+    #st.checkbox("Use GPT-4-vision to comment on graph", key='use_gpt4v', value=False)
 
     add_vertical_space(5)
     if st.button('Clear Chat'):
@@ -36,6 +36,7 @@ with st.sidebar:
             st.session_state['history'] = []
         if 'display_data' in st.session_state:
             st.session_state['display_data'] = {}
+        agent.reset_conversation()
 
 
     st.markdown("""
@@ -53,7 +54,7 @@ with st.sidebar:
     st.write('')
     st.write('')
 
-    st.markdown('#### Created by James N., 2024')
+    st.markdown('')
     if 'history' not in st.session_state:
         st.session_state['history'] = []
     if 'input' not in st.session_state:
@@ -81,7 +82,7 @@ if len(history) > 0:
     start_counting=False # flag to start including history items in the removal_indices list
     for message in history:
         idx += 1
-        message = dict(message)
+        message = message_to_dict(message)
         print("role: ", message.get("role"), "name: ", message.get("name"))
         if message.get("role") == "user":
             running_question_count +=1
@@ -95,7 +96,7 @@ if len(history) > 0:
         del history[index]
     question_count=0
     for message in history:
-        message = dict(message)
+        message = message_to_dict(message)
 
         if message.get("role") == "user":
             question_count +=1
@@ -115,6 +116,7 @@ if len(history) > 0:
 
 else:
     history, agent_response = agent.run(user_input=None)
+    st.session_state['history'] = history
     with st.chat_message("assistant"):
         st.markdown(agent_response)
     user_history=[]
