@@ -4,3 +4,6 @@ demo
 legacy
 plan.PNG
 README.md
+frontend/node_modules
+frontend/dist
+secrets.env
