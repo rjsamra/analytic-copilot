@@ -1,0 +1,4 @@
+{
+    "nuxt.isNuxtApp": false,
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+}
