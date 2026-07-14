@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
-import { clearSession, fetchSampleQuestions, streamChat } from "./api/client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  clearSession,
+  fetchGuardrails,
+  fetchSampleQuestions,
+  streamChat,
+} from "./api/client";
 import ChatPanel from "./components/ChatPanel";
+import GuardrailsPanel from "./components/GuardrailsPanel";
 import PipelineVisualization from "./components/PipelineVisualization";
 import type {
   ChatMessage,
   DisplayPayload,
+  Guardrail,
+  GuardrailCheck,
   PipelineStep,
   PipelineStepId,
   StreamEvent,
@@ -18,6 +26,8 @@ function initialSteps(): PipelineStep[] {
   return PIPELINE_STEPS.map((s) => ({ ...s, status: "idle" as const }));
 }
 
+type RightTab = "pipeline" | "guardrails";
+
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: "init", role: "assistant", content: INIT_MESSAGE },
@@ -29,10 +39,30 @@ export default function App() {
   const [activeCode, setActiveCode] = useState<string | undefined>();
   const [activeSql, setActiveSql] = useState<string | null | undefined>();
   const [showPipeline, setShowPipeline] = useState(true);
+  const [rightTab, setRightTab] = useState<RightTab>("pipeline");
+
+  const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
+  const [attachedIds, setAttachedIds] = useState<string[]>([]);
+  const [guardrailChecks, setGuardrailChecks] = useState<GuardrailCheck[]>([]);
 
   useEffect(() => {
     fetchSampleQuestions().then(setSampleQuestions).catch(() => {});
+    fetchGuardrails()
+      .then((items) => {
+        setGuardrails(items);
+        // Attach SQL safety by default for a safer demo baseline
+        const defaults = items
+          .filter((g) => g.id === "sql-safety" || g.id === "metric-shipped-date")
+          .map((g) => g.id);
+        setAttachedIds(defaults);
+      })
+      .catch(() => {});
   }, []);
+
+  const attachedGuardrails = useMemo(
+    () => guardrails.filter((g) => attachedIds.includes(g.id)),
+    [guardrails, attachedIds],
+  );
 
   const updateStep = useCallback((stepId: PipelineStepId, patch: Partial<PipelineStep>) => {
     setPipelineSteps((prev) =>
@@ -42,6 +72,25 @@ export default function App() {
 
   const handleStreamEvent = useCallback(
     (event: StreamEvent, displays: DisplayPayload[]) => {
+      if (event.type === "guardrail_check" && event.id) {
+        setGuardrailChecks((prev) => {
+          const entry: GuardrailCheck = {
+            id: event.id!,
+            name: event.name || event.id!,
+            type: event.guardrail_type || "",
+            status: event.status || "pending",
+            detail: event.detail || "",
+          };
+          const existingIdx = prev.findIndex((c) => c.id === event.id);
+          if (existingIdx >= 0) {
+            const next = [...prev];
+            next[existingIdx] = { ...next[existingIdx], ...entry };
+            return next;
+          }
+          return [...prev, entry];
+        });
+      }
+
       if (event.type === "step_start" && event.step) {
         setPipelineSteps((prev) =>
           prev.map((s) => {
@@ -123,11 +172,13 @@ export default function App() {
       setPipelineSteps(initialSteps().map((s) => ({ ...s, status: "idle" })));
       setActiveCode(undefined);
       setActiveSql(undefined);
+      setGuardrailChecks([]);
       setIsLoading(true);
+      if (showPipeline) setRightTab("pipeline");
 
       const displays: DisplayPayload[] = [];
 
-      streamChat(text, sessionId, false, {
+      streamChat(text, sessionId, false, attachedIds, {
         onEvent: (event) => handleStreamEvent(event, displays),
         onError: (error) => {
           setMessages((prev) => [
@@ -142,7 +193,7 @@ export default function App() {
         },
       });
     },
-    [handleStreamEvent, isLoading, sessionId],
+    [attachedIds, handleStreamEvent, isLoading, sessionId, showPipeline],
   );
 
   const handleClear = async () => {
@@ -152,6 +203,7 @@ export default function App() {
     setPipelineSteps(initialSteps());
     setActiveCode(undefined);
     setActiveSql(undefined);
+    setGuardrailChecks([]);
   };
 
   return (
@@ -165,12 +217,20 @@ export default function App() {
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-white">TextToSQL</h1>
+              <h1 className="text-lg font-bold text-white">Analytic Copilot</h1>
               <p className="text-xs text-slate-400">Generative Business Intelligence Assistant</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Instructor: <span className="text-slate-300">Naveen Bhansali</span>
+              </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
+            {attachedIds.length > 0 && (
+              <span className="hidden rounded-lg bg-accent/10 px-2 py-1 text-xs text-accent-glow ring-1 ring-accent/30 sm:inline">
+                {attachedIds.length} guardrail{attachedIds.length === 1 ? "" : "s"} attached
+              </span>
+            )}
             <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-400">
               <input
                 type="checkbox"
@@ -205,12 +265,51 @@ export default function App() {
         </section>
 
         {showPipeline && (
-          <section className="min-h-[calc(100vh-7rem)] rounded-2xl border border-surface-700/80 bg-surface-900/40 p-5 backdrop-blur">
-            <PipelineVisualization
-              steps={pipelineSteps}
-              activeCode={activeCode}
-              sql={activeSql}
-            />
+          <section className="flex min-h-[calc(100vh-7rem)] flex-col rounded-2xl border border-surface-700/80 bg-surface-900/40 p-5 backdrop-blur">
+            <div className="mb-4 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setRightTab("pipeline")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-widest transition ${
+                  rightTab === "pipeline"
+                    ? "bg-accent/15 text-accent-glow ring-1 ring-accent/30"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Pipeline
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightTab("guardrails")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-widest transition ${
+                  rightTab === "guardrails"
+                    ? "bg-accent/15 text-accent-glow ring-1 ring-accent/30"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Guardrails
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1">
+              {rightTab === "pipeline" ? (
+                <PipelineVisualization
+                  steps={pipelineSteps}
+                  activeCode={activeCode}
+                  sql={activeSql}
+                  attachedGuardrails={attachedGuardrails}
+                  guardrailChecks={guardrailChecks}
+                />
+              ) : (
+                <GuardrailsPanel
+                  guardrails={guardrails}
+                  attachedIds={attachedIds}
+                  checks={guardrailChecks}
+                  onAttachedChange={setAttachedIds}
+                  onLibraryChange={setGuardrails}
+                />
+              )}
+            </div>
           </section>
         )}
       </main>

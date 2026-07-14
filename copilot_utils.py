@@ -21,6 +21,12 @@ def _streamlit():
 from plotly.io import write_image, to_json as plotly_to_json
 from runtime import get_runtime, set_runtime, RuntimeContext
 from visualization_utils import chart_display_payload, table_display_payload
+from guardrails import (
+    any_blocked,
+    apply_row_cap,
+    evaluate_sql,
+    prompt_addons,
+)
 
 import shutil
 import uuid
@@ -228,15 +234,26 @@ def update_notebook(existing_content, new_content):
 
 def execute_python_code(assumptions, goal,python_code,execution_context):
 
-    def execute_sql_query(sql_query, limit=100):  
+    def execute_sql_query(sql_query, limit=100):
+        runtime = get_runtime()
+        attached = getattr(runtime, "attached_guardrails", None) or []
+        on_event = getattr(runtime, "on_event", None)
+        if attached:
+            sql_checks = evaluate_sql(sql_query, attached, on_event=on_event)
+            if any_blocked(sql_checks):
+                blocked = next(c for c in sql_checks if c.status == "blocked")
+                raise ValueError(f"Guardrail blocked SQL ({blocked.name}): {blocked.detail}")
+
         result = pd.read_sql_query(sql_query, engine)
         result = result.infer_objects()
-        for col in result.columns:  
-            if 'date' in col.lower():  
-                result[col] = pd.to_datetime(result[col], errors="ignore")  
+        for col in result.columns:
+            if 'date' in col.lower():
+                result[col] = pd.to_datetime(result[col], errors="ignore")
 
-        # result = result.head(limit)  # limit to save memory  
-        # st.write(result)
+        if attached:
+            result, _ = apply_row_cap(result, attached, on_event=on_event)
+        elif limit:
+            result = result.head(limit)
         return result
   
     def reduce_dataframe_size(df):  
@@ -556,6 +573,14 @@ def prepare_messages_for_api(history):
         if msg.get("tool_call_id"):
             clean["tool_call_id"] = msg["tool_call_id"]
         prepared.append(clean)
+
+    # Soft guardrails: append to system message on every API call (survives persona switches).
+    runtime = get_runtime()
+    addon = getattr(runtime, "guardrail_prompt_addon", "") or ""
+    if addon and prepared and prepared[0].get("role") == "system":
+        base = prepared[0].get("content") or ""
+        if "## Active Guardrails" not in base:
+            prepared[0] = {**prepared[0], "content": base + addon}
     return prepared
 
 

@@ -1,5 +1,6 @@
 export type PipelineStepId =
   | "understand"
+  | "guardrails"
   | "plan"
   | "context"
   | "generate"
@@ -39,6 +40,38 @@ export interface DisplayPayload {
 
 export type ResultViewMode = "auto" | "chart" | "table" | "both";
 
+export type GuardrailType =
+  | "sql_safety"
+  | "row_cap"
+  | "table_allowlist"
+  | "topic_block"
+  | "business_rule";
+
+export type GuardrailCheckStatus =
+  | "passed"
+  | "blocked"
+  | "applied"
+  | "skipped"
+  | "capped"
+  | "pending";
+
+export interface Guardrail {
+  id: string;
+  name: string;
+  type: GuardrailType;
+  description: string;
+  config: Record<string, unknown>;
+  preset?: boolean;
+}
+
+export interface GuardrailCheck {
+  id: string;
+  name: string;
+  type: string;
+  status: GuardrailCheckStatus;
+  detail: string;
+}
+
 export interface StreamEvent {
   type: string;
   step?: PipelineStepId;
@@ -51,9 +84,19 @@ export interface StreamEvent {
   session_id?: string;
   displays?: DisplayPayload[];
   display?: DisplayPayload;
+  id?: string;
+  name?: string;
+  status?: GuardrailCheckStatus;
+  guardrail_type?: string;
+  guardrail_blocked?: boolean;
 }
 
 export const PIPELINE_STEPS: Omit<PipelineStep, "status" | "detail" | "code">[] = [
+  {
+    id: "guardrails",
+    label: "Guardrails",
+    description: "Apply attached safety & policy checks",
+  },
   {
     id: "understand",
     label: "Understand",
@@ -85,3 +128,11 @@ export const PIPELINE_STEPS: Omit<PipelineStep, "status" | "detail" | "code">[] 
     description: "Summarize insights for the user",
   },
 ];
+
+export const GUARDRAIL_TYPE_LABELS: Record<GuardrailType, string> = {
+  sql_safety: "SQL safety",
+  row_cap: "Row / cost cap",
+  table_allowlist: "Table allowlist",
+  topic_block: "Topic block",
+  business_rule: "Business rule",
+};

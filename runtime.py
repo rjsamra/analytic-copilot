@@ -13,11 +13,17 @@ class RuntimeContext:
         on_display: Optional[Callable[[dict], None]] = None,
         show_internal_thoughts: bool = False,
         use_gpt4v: bool = False,
+        attached_guardrails: Optional[list] = None,
+        on_event: Optional[Callable[[str, dict], None]] = None,
+        guardrail_prompt_addon: str = "",
     ):
         self._store: dict[str, Any] = {}
         self.show_internal_thoughts = show_internal_thoughts
         self.use_gpt4v = use_gpt4v
         self.on_display = on_display
+        self.attached_guardrails = attached_guardrails or []
+        self.on_event = on_event
+        self.guardrail_prompt_addon = guardrail_prompt_addon
 
     def __getitem__(self, key: str) -> Any:
         return self._store[key]

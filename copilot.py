@@ -8,7 +8,7 @@ from copilot_utils import CODER2, CODER_AVAILABLE_FUNCTIONS2, CODER_FUNCTIONS_SP
 
 # Initialize smart agent with CODER1 persona
 agent = Smart_Agent(persona=CODER2,functions_list=CODER_AVAILABLE_FUNCTIONS2, functions_spec=CODER_FUNCTIONS_SPEC2, init_message="Hello, I am your AI Analytic Assistant, what question do you have？")
-st.set_page_config(layout="wide",page_title="Smart Analytic Copilot Demo Application using LLM")
+st.set_page_config(layout="wide",page_title="Analytic Copilot")
 styl = f"""
 <style>
     .stTextInput {{
@@ -23,9 +23,8 @@ st.markdown(styl, unsafe_allow_html=True)
 MAX_HIST= 3
 with st.sidebar:
 
-    st.title('Generative Business Intelligence Assistant')
-    st.markdown('''
-    ''')
+    st.title('Analytic Copilot')
+    st.markdown('Instructor: **Naveen Bhansali**')
     st.checkbox("Show AI Assistant's internal thought process", key='show_internal_thoughts', value=False)
     #st.checkbox("Use GPT-4-vision to comment on graph", key='use_gpt4v', value=False)
 

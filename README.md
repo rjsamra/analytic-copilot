@@ -157,6 +157,7 @@ With **Show pipeline** enabled, the right panel streams:
 5. **Execute** — run against SQLite & render visualization  
 6. **Respond** — summarize insights for the user  
 
+
 ---
 
 ## License

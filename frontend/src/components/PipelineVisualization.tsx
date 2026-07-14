@@ -1,10 +1,13 @@
 import { motion, AnimatePresence } from "framer-motion";
-import type { PipelineStep } from "../types";
+import type { Guardrail, GuardrailCheck, PipelineStep } from "../types";
+import { GUARDRAIL_TYPE_LABELS } from "../types";
 
 interface Props {
   steps: PipelineStep[];
   activeCode?: string;
   sql?: string | null;
+  attachedGuardrails?: Guardrail[];
+  guardrailChecks?: GuardrailCheck[];
 }
 
 const statusStyles = {
@@ -21,8 +24,24 @@ const dotStyles = {
   error: "bg-red-400",
 };
 
-export default function PipelineVisualization({ steps, activeCode, sql }: Props) {
+const checkStyles: Record<string, string> = {
+  passed: "text-emerald-300",
+  blocked: "text-red-300",
+  applied: "text-sky-300",
+  capped: "text-amber-300",
+  skipped: "text-slate-400",
+  pending: "text-slate-500",
+};
+
+export default function PipelineVisualization({
+  steps,
+  activeCode,
+  sql,
+  attachedGuardrails = [],
+  guardrailChecks = [],
+}: Props) {
   const activeStep = steps.find((s) => s.status === "active");
+  const checkById = new Map(guardrailChecks.map((c) => [c.id, c]));
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -32,9 +51,40 @@ export default function PipelineVisualization({ steps, activeCode, sql }: Props)
         </div>
         <h2 className="text-lg font-semibold text-white">Agent Pipeline</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Watch how your question flows through the Text-to-SQL agent
+          Watch how your question flows through the Analytic Copilot agent
         </p>
       </div>
+
+      {attachedGuardrails.length > 0 && (
+        <div className="rounded-2xl border border-surface-700 bg-surface-900/60 p-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+            Active guardrails
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {attachedGuardrails.map((g) => {
+              const check = checkById.get(g.id);
+              const status = check?.status ?? "pending";
+              return (
+                <div
+                  key={g.id}
+                  className="rounded-lg border border-surface-600 bg-surface-800/70 px-2.5 py-1.5"
+                  title={check?.detail || g.description}
+                >
+                  <div className="text-xs font-medium text-white">{g.name}</div>
+                  <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide">
+                    <span className="text-slate-500">
+                      {GUARDRAIL_TYPE_LABELS[g.type]}
+                    </span>
+                    <span className={checkStyles[status] || checkStyles.pending}>
+                      {status}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="relative flex-1 overflow-y-auto rounded-2xl border border-surface-700 bg-surface-900/60 p-4">
         <div className="space-y-0">
@@ -91,6 +141,22 @@ export default function PipelineVisualization({ steps, activeCode, sql }: Props)
                         </motion.p>
                       )}
                     </AnimatePresence>
+
+                    {step.id === "guardrails" && guardrailChecks.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {guardrailChecks.map((c) => (
+                          <li key={`${c.id}-${c.status}`} className="text-xs">
+                            <span className={checkStyles[c.status] || checkStyles.pending}>
+                              [{c.status}]
+                            </span>{" "}
+                            <span className="opacity-90">{c.name}</span>
+                            {c.detail ? (
+                              <span className="opacity-70"> — {c.detail}</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
               </motion.div>
