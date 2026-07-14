@@ -1,4 +1,4 @@
-"""FastAPI backend for the TextToSQL React UI with SSE pipeline events."""
+"""FastAPI backend for the Analytic Copilot React UI with SSE pipeline events."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from guardrails import (
 from runtime import RuntimeContext, set_runtime
 from visualization_utils import chart_display_payload, table_display_payload
 
-app = FastAPI(title="TextToSQL API", version="1.0.0")
+app = FastAPI(title="Analytic Copilot API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,

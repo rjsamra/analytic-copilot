@@ -217,7 +217,7 @@ export default function App() {
               </svg>
             </div>
             <div>
-              <h1 className="text-lg font-bold text-white">TextToSQL</h1>
+              <h1 className="text-lg font-bold text-white">Analytic Copilot</h1>
               <p className="text-xs text-slate-400">Generative Business Intelligence Assistant</p>
             </div>
           </div>

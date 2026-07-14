@@ -51,7 +51,7 @@ export default function PipelineVisualization({
         </div>
         <h2 className="text-lg font-semibold text-white">Agent Pipeline</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Watch how your question flows through the Text-to-SQL agent
+          Watch how your question flows through the Analytic Copilot agent
         </p>
       </div>
 
