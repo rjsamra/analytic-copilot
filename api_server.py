@@ -6,14 +6,14 @@ import json
 import queue
 import threading
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from plotly.graph_objects import Figure as PlotlyFigure
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from copilot_utils import (
     CODER2,
@@ -21,6 +21,14 @@ from copilot_utils import (
     CODER_FUNCTIONS_SPEC2,
     Smart_Agent,
     extract_sql_query,
+)
+from guardrails import (
+    GuardrailType,
+    any_blocked,
+    evaluate_question,
+    get_store,
+    mark_soft_rules_applied,
+    prompt_addons,
 )
 from runtime import RuntimeContext, set_runtime
 from visualization_utils import chart_display_payload, table_display_payload
@@ -53,10 +61,19 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
     show_internal_thoughts: bool = False
+    attached_guardrail_ids: list[str] = Field(default_factory=list)
 
 
 class ClearRequest(BaseModel):
     session_id: str
+
+
+class GuardrailUpsertRequest(BaseModel):
+    id: Optional[str] = None
+    name: str
+    type: GuardrailType
+    description: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 def _serialize_display_data(data: Any) -> dict | None:
@@ -127,6 +144,7 @@ def _get_or_create_session(session_id: str | None) -> tuple[str, dict[str, Any]]
         "agent": agent,
         "history": agent.conversation,
         "displays": [],
+        "attached_guardrail_ids": [],
     }
     return new_id, _sessions[new_id]
 
@@ -141,6 +159,37 @@ def sample_questions():
     return {"questions": SAMPLE_QUESTIONS}
 
 
+@app.get("/api/guardrails")
+def list_guardrails():
+    return {"guardrails": [g.to_dict() for g in get_store().list()]}
+
+
+@app.post("/api/guardrails")
+def upsert_guardrail(req: GuardrailUpsertRequest):
+    try:
+        g = get_store().upsert(
+            guardrail_id=req.id,
+            name=req.name,
+            type=req.type,
+            description=req.description,
+            config=req.config,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"guardrail": g.to_dict()}
+
+
+@app.delete("/api/guardrails/{guardrail_id}")
+def delete_guardrail(guardrail_id: str):
+    try:
+        ok = get_store().delete(guardrail_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Guardrail not found")
+    return {"ok": True}
+
+
 @app.post("/api/clear")
 def clear_session(req: ClearRequest):
     _sessions.pop(req.session_id, None)
@@ -153,6 +202,10 @@ def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     session_id, session = _get_or_create_session(req.session_id)
+    session["attached_guardrail_ids"] = list(req.attached_guardrail_ids or [])
+    attached = get_store().get_many(session["attached_guardrail_ids"])
+    addon = prompt_addons(attached)
+
     event_queue: queue.Queue = queue.Queue()
     displays: list[dict] = []
 
@@ -166,11 +219,66 @@ def chat(req: ChatRequest):
     runtime = RuntimeContext(
         on_display=on_display,
         show_internal_thoughts=req.show_internal_thoughts,
+        attached_guardrails=attached,
+        on_event=on_event,
+        guardrail_prompt_addon=addon,
     )
 
     def run_agent():
         set_runtime(runtime)
         try:
+            # Pipeline stage: Guardrails
+            on_event(
+                "step_start",
+                {
+                    "step": "guardrails",
+                    "label": "Applying guardrails",
+                    "detail": (
+                        f"{len(attached)} guardrail(s) attached"
+                        if attached
+                        else "No guardrails attached"
+                    ),
+                },
+            )
+
+            topic_results = evaluate_question(req.message, attached, on_event=on_event)
+            mark_soft_rules_applied(attached, on_event=on_event)
+
+            if any_blocked(topic_results):
+                blocked = next(r for r in topic_results if r.status == "blocked")
+                answer = (
+                    f"I can't help with that request because the **{blocked.name}** "
+                    f"guardrail blocked it.\n\n{blocked.detail}"
+                )
+                on_event(
+                    "step_error",
+                    {"step": "guardrails", "detail": blocked.detail},
+                )
+                event_queue.put(
+                    {
+                        "type": "done",
+                        "session_id": session_id,
+                        "answer": answer,
+                        "code": None,
+                        "sql": None,
+                        "displays": [],
+                        "guardrail_blocked": True,
+                    }
+                )
+                return
+
+            on_event(
+                "step_complete",
+                {
+                    "step": "guardrails",
+                    "detail": (
+                        f"Passed pre-checks · {len(attached)} active"
+                        if attached
+                        else "Skipped (none attached)"
+                    ),
+                },
+            )
+
             agent: Smart_Agent = session["agent"]
             agent.on_event = on_event
             _, code, history, answer, data = agent.run(

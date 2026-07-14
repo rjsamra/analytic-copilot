@@ -1,0 +1,105 @@
+[
+  {
+    "id": "sql-safety",
+    "name": "No dangerous SQL",
+    "type": "sql_safety",
+    "description": "Block DDL/DML: DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE.",
+    "config": {
+      "blocked_keywords": [
+        "DROP",
+        "DELETE",
+        "UPDATE",
+        "INSERT",
+        "ALTER",
+        "TRUNCATE",
+        "CREATE",
+        "REPLACE"
+      ]
+    },
+    "preset": true
+  },
+  {
+    "id": "row-cap-50",
+    "name": "Max 50 rows",
+    "type": "row_cap",
+    "description": "Cap query results to at most 50 rows.",
+    "config": {
+      "max_rows": 50
+    },
+    "preset": true
+  },
+  {
+    "id": "tables-orders-customers",
+    "name": "Orders + Customers only",
+    "type": "table_allowlist",
+    "description": "Only allow queries against Orders and Customers tables.",
+    "config": {
+      "allowed_tables": [
+        "orders",
+        "customers",
+        "[Order Details]",
+        "Order Details"
+      ]
+    },
+    "preset": true
+  },
+  {
+    "id": "topic-no-hr",
+    "name": "No HR/salary topics",
+    "type": "topic_block",
+    "description": "Refuse questions about employee salary, wages, or sensitive HR/PII.",
+    "config": {
+      "keywords": [
+        "salary",
+        "salaries",
+        "wage",
+        "wages",
+        "paycheck",
+        "compensation",
+        "ssn",
+        "social security",
+        "employee pay",
+        "how much does",
+        "paid"
+      ]
+    },
+    "preset": true
+  },
+  {
+    "id": "metric-shipped-date",
+    "name": "Revenue on ShippedDate",
+    "type": "business_rule",
+    "description": "Revenue/sales must be recognized using ShippedDate, not OrderDate.",
+    "config": {
+      "rule": "Revenue and total sales must be calculated using ShippedDate (not OrderDate)."
+    },
+    "preset": true
+  },
+  {
+    "id": "no-products-table",
+    "name": "No Products table",
+    "type": "table_allowlist",
+    "description": "Allow all Northwind tables except Products \u2014 sharp break-demo when product questions fail.",
+    "config": {
+      "allowed_tables": [
+        "orders",
+        "customers",
+        "[Order Details]",
+        "Order Details",
+        "employees",
+        "shippers",
+        "suppliers",
+        "categories",
+        "territories",
+        "region",
+        "employeeterritories",
+        "customercustomerdemo",
+        "customerdemographics"
+      ],
+      "denied_tables": [
+        "products"
+      ]
+    },
+    "preset": true
+  }
+]
