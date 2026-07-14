@@ -219,6 +219,9 @@ export default function App() {
             <div>
               <h1 className="text-lg font-bold text-white">Analytic Copilot</h1>
               <p className="text-xs text-slate-400">Generative Business Intelligence Assistant</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Instructor: <span className="text-slate-300">Naveen Bhansali</span>
+              </p>
             </div>
           </div>
 

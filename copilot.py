@@ -24,8 +24,7 @@ MAX_HIST= 3
 with st.sidebar:
 
     st.title('Analytic Copilot')
-    st.markdown('''
-    ''')
+    st.markdown('Instructor: **Naveen Bhansali**')
     st.checkbox("Show AI Assistant's internal thought process", key='show_internal_thoughts', value=False)
     #st.checkbox("Use GPT-4-vision to comment on graph", key='use_gpt4v', value=False)
 
