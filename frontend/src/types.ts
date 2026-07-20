@@ -72,6 +72,33 @@ export interface GuardrailCheck {
   detail: string;
 }
 
+export type EvalCaseStatus =
+  | "pending"
+  | "running"
+  | "passed"
+  | "failed"
+  | "error";
+
+export interface EvalCase {
+  id: string;
+  question: string;
+  gold_sql: string;
+  must_contain?: string[];
+  notes?: string;
+}
+
+export interface EvalCaseResult {
+  id: string;
+  question: string;
+  status: EvalCaseStatus;
+  detail: string;
+  agent_sql?: string | null;
+  gold_sql?: string | null;
+  gold_rows?: number | null;
+  agent_rows?: number | null;
+  notes?: string;
+}
+
 export interface StreamEvent {
   type: string;
   step?: PipelineStepId;
@@ -86,9 +113,19 @@ export interface StreamEvent {
   display?: DisplayPayload;
   id?: string;
   name?: string;
-  status?: GuardrailCheckStatus;
+  status?: GuardrailCheckStatus | EvalCaseStatus;
   guardrail_type?: string;
   guardrail_blocked?: boolean;
+  question?: string;
+  index?: number;
+  total?: number;
+  passed?: number;
+  failed?: number;
+  agent_sql?: string | null;
+  gold_sql?: string | null;
+  gold_rows?: number | null;
+  agent_rows?: number | null;
+  notes?: string;
 }
 
 export const PIPELINE_STEPS: Omit<PipelineStep, "status" | "detail" | "code">[] = [

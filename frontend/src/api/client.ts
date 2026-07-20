@@ -1,4 +1,10 @@
-import type { DisplayPayload, Guardrail, GuardrailType, StreamEvent } from "../types";
+import type {
+  DisplayPayload,
+  EvalCase,
+  Guardrail,
+  GuardrailType,
+  StreamEvent,
+} from "../types";
 
 export interface ChatStreamCallbacks {
   onEvent: (event: StreamEvent) => void;
@@ -51,6 +57,57 @@ export async function clearSession(sessionId: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),
   });
+}
+
+export async function fetchEvalCases(): Promise<EvalCase[]> {
+  const res = await fetch("/api/eval/cases");
+  const data = await res.json();
+  return data.cases ?? [];
+}
+
+export function streamEvalRun(callbacks: ChatStreamCallbacks): AbortController {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch("/api/eval/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        callbacks.onError(`Eval request failed (${res.status})`);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+          const payload = JSON.parse(line.slice(6)) as StreamEvent;
+          callbacks.onEvent(payload);
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        callbacks.onError((err as Error).message);
+      }
+    }
+  })();
+
+  return controller;
 }
 
 export function streamChat(

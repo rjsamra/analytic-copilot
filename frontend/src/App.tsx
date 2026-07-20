@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   clearSession,
+  fetchEvalCases,
   fetchGuardrails,
   fetchSampleQuestions,
   streamChat,
 } from "./api/client";
 import ChatPanel from "./components/ChatPanel";
+import EvalPanel from "./components/EvalPanel";
 import GuardrailsPanel from "./components/GuardrailsPanel";
 import PipelineVisualization from "./components/PipelineVisualization";
 import type {
   ChatMessage,
   DisplayPayload,
+  EvalCase,
   Guardrail,
   GuardrailCheck,
   PipelineStep,
@@ -26,7 +29,7 @@ function initialSteps(): PipelineStep[] {
   return PIPELINE_STEPS.map((s) => ({ ...s, status: "idle" as const }));
 }
 
-type RightTab = "pipeline" | "guardrails";
+type RightTab = "pipeline" | "guardrails" | "eval";
 
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -44,6 +47,7 @@ export default function App() {
   const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
   const [attachedIds, setAttachedIds] = useState<string[]>([]);
   const [guardrailChecks, setGuardrailChecks] = useState<GuardrailCheck[]>([]);
+  const [evalCases, setEvalCases] = useState<EvalCase[]>([]);
 
   useEffect(() => {
     fetchSampleQuestions().then(setSampleQuestions).catch(() => {});
@@ -57,6 +61,7 @@ export default function App() {
         setAttachedIds(defaults);
       })
       .catch(() => {});
+    fetchEvalCases().then(setEvalCases).catch(() => {});
   }, []);
 
   const attachedGuardrails = useMemo(
@@ -78,7 +83,7 @@ export default function App() {
             id: event.id!,
             name: event.name || event.id!,
             type: event.guardrail_type || "",
-            status: event.status || "pending",
+            status: (event.status as GuardrailCheck["status"]) || "pending",
             detail: event.detail || "",
           };
           const existingIdx = prev.findIndex((c) => c.id === event.id);
@@ -266,7 +271,7 @@ export default function App() {
 
         {showPipeline && (
           <section className="flex min-h-[calc(100vh-7rem)] flex-col rounded-2xl border border-surface-700/80 bg-surface-900/40 p-5 backdrop-blur">
-            <div className="mb-4 flex items-center gap-2">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setRightTab("pipeline")}
@@ -289,6 +294,17 @@ export default function App() {
               >
                 Guardrails
               </button>
+              <button
+                type="button"
+                onClick={() => setRightTab("eval")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-widest transition ${
+                  rightTab === "eval"
+                    ? "bg-accent/15 text-accent-glow ring-1 ring-accent/30"
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Eval
+              </button>
             </div>
 
             <div className="min-h-0 flex-1">
@@ -300,7 +316,7 @@ export default function App() {
                   attachedGuardrails={attachedGuardrails}
                   guardrailChecks={guardrailChecks}
                 />
-              ) : (
+              ) : rightTab === "guardrails" ? (
                 <GuardrailsPanel
                   guardrails={guardrails}
                   attachedIds={attachedIds}
@@ -308,6 +324,8 @@ export default function App() {
                   onAttachedChange={setAttachedIds}
                   onLibraryChange={setGuardrails}
                 />
+              ) : (
+                <EvalPanel cases={evalCases} onCasesLoaded={setEvalCases} />
               )}
             </div>
           </section>

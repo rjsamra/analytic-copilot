@@ -22,6 +22,7 @@ from copilot_utils import (
     Smart_Agent,
     extract_sql_query,
 )
+from evaluation import extract_agent_sql, load_cases, score_case
 from guardrails import (
     GuardrailType,
     any_blocked,
@@ -194,6 +195,114 @@ def delete_guardrail(guardrail_id: str):
 def clear_session(req: ClearRequest):
     _sessions.pop(req.session_id, None)
     return {"ok": True}
+
+
+@app.get("/api/eval/cases")
+def list_eval_cases():
+    return {"cases": [c.to_dict() for c in load_cases()]}
+
+
+@app.post("/api/eval/run")
+def run_evaluation():
+    """Run the golden-set harness; stream per-case results via SSE."""
+    cases = load_cases()
+    if not cases:
+        raise HTTPException(status_code=404, detail="No evaluation cases found")
+
+    event_queue: queue.Queue = queue.Queue()
+
+    def run_eval():
+        passed = 0
+        failed = 0
+        try:
+            event_queue.put({"type": "eval_start", "total": len(cases)})
+            for index, case in enumerate(cases):
+                event_queue.put(
+                    {
+                        "type": "case_start",
+                        "id": case.id,
+                        "question": case.question,
+                        "index": index,
+                        "total": len(cases),
+                        "notes": case.notes,
+                        "gold_sql": case.gold_sql,
+                    }
+                )
+
+                agent_sql: str | None = None
+                try:
+                    agent = Smart_Agent(
+                        persona=CODER2,
+                        functions_list=CODER_AVAILABLE_FUNCTIONS2,
+                        functions_spec=CODER_FUNCTIONS_SPEC2,
+                        init_message=INIT_MESSAGE,
+                    )
+                    # Fresh agent per case; no chat history, no guardrails
+                    set_runtime(
+                        RuntimeContext(
+                            show_internal_thoughts=False,
+                            attached_guardrails=[],
+                            on_event=None,
+                            guardrail_prompt_addon="",
+                        )
+                    )
+                    agent.run(user_input=None)
+                    _, code, _, _, _ = agent.run(
+                        user_input=case.question,
+                        conversation=agent.conversation,
+                        stream=False,
+                    )
+                    agent_sql = extract_agent_sql(code) or (
+                        extract_sql_query(code) if code else None
+                    )
+                    result = score_case(case, agent_sql)
+                except Exception as exc:
+                    result = score_case(case, agent_sql)
+                    result.status = "error"
+                    result.detail = f"Agent run failed: {exc}"
+                finally:
+                    set_runtime(None)
+
+                if result.status == "passed":
+                    passed += 1
+                else:
+                    failed += 1
+
+                event_queue.put({"type": "case_result", **result.to_dict()})
+
+            event_queue.put(
+                {
+                    "type": "eval_done",
+                    "passed": passed,
+                    "failed": failed,
+                    "total": len(cases),
+                }
+            )
+        except Exception as exc:
+            event_queue.put({"type": "error", "detail": str(exc)})
+        finally:
+            set_runtime(None)
+            event_queue.put(None)
+
+    thread = threading.Thread(target=run_eval, daemon=True)
+    thread.start()
+
+    def event_stream():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item, default=str)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/chat")

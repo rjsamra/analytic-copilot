@@ -67,11 +67,15 @@ User question → Understand → Plan → Context retrieval → Generate Python/
 | --- | --- |
 | `api_server.py` | FastAPI + SSE chat streaming for the React UI |
 | `copilot_utils.py` | Agent, tools, context retrieval, code execution |
+| `guardrails.py` | Guardrail library, checks, and prompt injection |
+| `evaluation.py` | Golden-set eval harness (execution accuracy) |
 | `runtime.py` | Request-scoped runtime / display state |
 | `visualization_utils.py` | Table/chart payloads for the UI |
 | `copilot.py` | Optional Streamlit UI (legacy / alternate front end) |
 | `frontend/` | React + Vite chat + pipeline visualization |
 | `data/metadata.json` | Analytic scenarios, tables, columns, business rules |
+| `data/guardrails.json` | Preset / custom guardrail definitions |
+| `data/eval_cases.json` | Golden questions + gold SQL for the Eval tab |
 | `data/northwind.db` | Sample SQLite database |
 
 ---
@@ -150,13 +154,25 @@ streamlit run copilot.py
 
 With **Show pipeline** enabled, the right panel streams:
 
-1. **Understand** — parse the natural-language question  
-2. **Plan** — choose analyst persona & strategy  
-3. **Context** — retrieve schemas, tables & business rules  
-4. **Generate** — write SQL + Python analysis code  
-5. **Execute** — run against SQLite & render visualization  
-6. **Respond** — summarize insights for the user  
+1. **Guardrails** — apply attached safety & policy checks  
+2. **Understand** — parse the natural-language question  
+3. **Plan** — choose analyst persona & strategy  
+4. **Context** — retrieve schemas, tables & business rules  
+5. **Generate** — write SQL + Python analysis code  
+6. **Execute** — run against SQLite & render visualization  
+7. **Respond** — summarize insights for the user  
 
+---
+
+## Evaluation harness (classroom)
+
+Right panel → **Eval** tab. Cases live in `data/eval_cases.json` (aligned with the sample questions).
+
+1. Click **Run evaluation** — each case runs on a fresh agent (no chat history, no session guardrails).
+2. Watch the live scoreboard (total / passed / failed).
+3. Expand a case to compare **agent SQL** vs **gold SQL**.
+
+**Pass** means **execution accuracy**: the agent’s SQL returns the same result set as the gold query (normalized rows/values), not an exact SQL string match. Optional `must_contain` tokens (e.g. `ShippedDate`) fail the case when missing so students can discuss business-rule misses.
 
 ---
 

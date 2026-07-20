@@ -1,0 +1,30 @@
+[
+  {
+    "id": "sales-by-year",
+    "question": "What were the total sales for each year available in the database?",
+    "gold_sql": "SELECT strftime('%Y', o.ShippedDate) AS year,\n       ROUND(SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)), 2) AS total_sales\nFROM Orders o\nJOIN [Order Details] od ON o.OrderID = od.OrderID\nWHERE o.ShippedDate IS NOT NULL\nGROUP BY strftime('%Y', o.ShippedDate)\nORDER BY year",
+    "must_contain": ["ShippedDate"],
+    "notes": "Revenue is recognized on ShippedDate (not OrderDate)."
+  },
+  {
+    "id": "top-customers",
+    "question": "Who are the top 5 customers by order volume, and what is the total number of orders for each?",
+    "gold_sql": "SELECT c.CompanyName, COUNT(DISTINCT o.OrderID) AS order_count\nFROM Customers c\nJOIN Orders o ON c.CustomerID = o.CustomerID\nGROUP BY c.CustomerID, c.CompanyName\nORDER BY order_count DESC\nLIMIT 5",
+    "must_contain": ["LIMIT"],
+    "notes": "Must return exactly the top 5 by distinct order count."
+  },
+  {
+    "id": "top-products",
+    "question": "What are the top 10 most popular products based on quantity sold?",
+    "gold_sql": "SELECT p.ProductName, SUM(od.Quantity) AS total_quantity\nFROM Products p\nJOIN [Order Details] od ON p.ProductID = od.ProductID\nGROUP BY p.ProductID, p.ProductName\nORDER BY total_quantity DESC\nLIMIT 10",
+    "must_contain": ["LIMIT"],
+    "notes": "Rank by SUM(Quantity), not by revenue."
+  },
+  {
+    "id": "sales-by-country",
+    "question": "What are the total sales broken down by country?",
+    "gold_sql": "SELECT c.Country,\n       ROUND(SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)), 2) AS total_sales\nFROM Customers c\nJOIN Orders o ON c.CustomerID = o.CustomerID\nJOIN [Order Details] od ON o.OrderID = od.OrderID\nWHERE o.ShippedDate IS NOT NULL\nGROUP BY c.Country\nORDER BY total_sales DESC",
+    "must_contain": ["ShippedDate"],
+    "notes": "Sales by customer Country; revenue on ShippedDate."
+  }
+]
