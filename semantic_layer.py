@@ -203,6 +203,38 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
 
 
+# Scalar compile_sql cannot GROUP BY / ORDER BY / LIMIT — these cues force agent fallback.
+_ENTITY_OR_GRAIN = (
+    r"customer|customers|company|companies|product|products|"
+    r"employee|employees|category|categories|country|countries|"
+    r"region|regions|month|months|year|years|quarter|quarters"
+)
+_BREAKDOWN_OR_RANKING_PATTERNS = [
+    re.compile(r"\btop\s+\d+\b"),
+    re.compile(r"\bbottom\s+\d+\b"),
+    re.compile(r"\brank(?:ed)?\s+by\b"),
+    re.compile(r"\bhighest\b"),
+    re.compile(r"\blowest\b"),
+    re.compile(r"\bmost\s+\w+"),
+    re.compile(r"\bleast\s+\w+"),
+    re.compile(rf"\bby\s+(?:{_ENTITY_OR_GRAIN})\b"),
+    re.compile(rf"\b(?:for\s+)?each\s+(?:{_ENTITY_OR_GRAIN})\b"),
+    re.compile(rf"\bper\s+(?:{_ENTITY_OR_GRAIN})\b"),
+    re.compile(r"\b(?:broken\s+down|grouped|split)\s+by\b"),
+    re.compile(r"\b(?:yearly|monthly|quarterly|annually)\b"),
+    re.compile(r"\b(?:over|across|by)\s+(?:the\s+)?years?\b"),
+    re.compile(
+        r"\b(?:who|which)\b.+\b(?:customers?|companies|products?|employees?|countries)\b"
+    ),
+]
+
+
+def _requires_breakdown_or_ranking(question: str) -> bool:
+    """True when the question needs grouping/ranking the scalar metric compiler cannot emit."""
+    q = _normalize(question)
+    return any(p.search(q) for p in _BREAKDOWN_OR_RANKING_PATTERNS)
+
+
 def _detect_metric_intent(question: str, profile: UserProfile) -> tuple[list[str], float]:
     """Return candidate metric_ids and confidence via synonym matching."""
     q = _normalize(question)
@@ -367,6 +399,10 @@ def resolve_metric(
 ) -> ResolutionResult:
     session_prefs = session_prefs or {}
     metrics = load_metrics().get("metrics", {})
+
+    # Scalar fast path cannot answer ranked/grouped questions — fall back to agent.
+    if _requires_breakdown_or_ranking(question):
+        return ResolutionResult(status="no_metric")
 
     # Clarification override from session
     forced_metric = session_prefs.get("metric_id")
