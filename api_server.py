@@ -174,6 +174,7 @@ def _augment_displays(displays: list[dict]) -> list[dict]:
 def _format_semantic_answer(resolution, profile, df: pd.DataFrame | None) -> str:
     period = resolution.time_range_label or "the requested period"
     scope = profile.region or "Global"
+    grain = getattr(resolution, "group_by_grain", None)
     if df is not None and len(df) == 1:
         val = df.iloc[0, 0]
         if isinstance(val, float):
@@ -185,6 +186,19 @@ def _format_semantic_answer(resolution, profile, df: pd.DataFrame | None) -> str
             f"The **{resolution.metric_label}** for {period}, "
             f"for orders in **{scope}**, was **{val}**."
         )
+    if df is not None and len(df) > 1 and grain and len(df.columns) >= 2:
+        lines = [
+            f"Here is **{resolution.metric_label}** by {grain} "
+            f"for orders in **{scope}**:"
+        ]
+        for _, row in df.iterrows():
+            label = row.iloc[0]
+            val = row.iloc[1]
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                lines.append(f"- **{label}**: ${float(val):,.2f}")
+            else:
+                lines.append(f"- **{label}**: {val}")
+        return "\n".join(lines)
     return (
         f"The **{resolution.metric_label}** for {period}, "
         f"for orders in **{scope}**."

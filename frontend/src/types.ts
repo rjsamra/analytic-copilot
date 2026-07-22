@@ -115,6 +115,7 @@ export interface ResolutionPayload {
   time_dimension_label?: string;
   time_range?: [string, string] | null;
   time_range_label?: string;
+  group_by_grain?: string | null;
   scope_filters?: string[];
   scope_label?: string;
   assumptions?: string[];

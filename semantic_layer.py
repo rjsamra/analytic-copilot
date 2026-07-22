@@ -60,6 +60,7 @@ class ResolutionResult:
     time_dimension_label: str | None = None
     time_range: tuple[str, str] | None = None
     time_range_label: str | None = None
+    group_by_grain: str | None = None  # "year" | "month" | "quarter"
     scope_filters: list[str] = field(default_factory=list)
     scope_joins: list[str] = field(default_factory=list)
     scope_label: str | None = None
@@ -79,6 +80,7 @@ class ResolutionResult:
             "time_dimension_label": self.time_dimension_label,
             "time_range": list(self.time_range) if self.time_range else None,
             "time_range_label": self.time_range_label,
+            "group_by_grain": self.group_by_grain,
             "scope_filters": self.scope_filters,
             "scope_label": self.scope_label,
             "assumptions": self.assumptions,
@@ -203,13 +205,44 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
 
 
-# Scalar compile_sql cannot GROUP BY / ORDER BY / LIMIT — these cues force agent fallback.
-_ENTITY_OR_GRAIN = (
+# Time-series GROUP BY that compile_sql can emit from a metric's time_dimension.
+_TIME_GROUP_GRAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "year",
+        re.compile(
+            r"(?:\b(?:for\s+)?each\s+years?\b|\bper\s+years?\b|"
+            r"\b(?:by|over|across)\s+(?:the\s+)?years?\b|"
+            r"\b(?:broken\s+down|grouped|split)\s+by\s+(?:the\s+)?years?\b|"
+            r"\b(?:yearly|annually)\b)"
+        ),
+    ),
+    (
+        "month",
+        re.compile(
+            r"(?:\b(?:for\s+)?each\s+months?\b|\bper\s+months?\b|"
+            r"\b(?:by|over|across)\s+(?:the\s+)?months?\b|"
+            r"\b(?:broken\s+down|grouped|split)\s+by\s+(?:the\s+)?months?\b|"
+            r"\bmonthly\b)"
+        ),
+    ),
+    (
+        "quarter",
+        re.compile(
+            r"(?:\b(?:for\s+)?each\s+quarters?\b|\bper\s+quarters?\b|"
+            r"\b(?:by|over|across)\s+(?:the\s+)?quarters?\b|"
+            r"\b(?:broken\s+down|grouped|split)\s+by\s+(?:the\s+)?quarters?\b|"
+            r"\bquarterly\b)"
+        ),
+    ),
+]
+
+# Entity rankings / GROUP BY dims the scalar+time-grain compiler cannot emit.
+_ENTITY = (
     r"customer|customers|company|companies|product|products|"
     r"employee|employees|category|categories|country|countries|"
-    r"region|regions|month|months|year|years|quarter|quarters"
+    r"region|regions"
 )
-_BREAKDOWN_OR_RANKING_PATTERNS = [
+_ENTITY_BREAKDOWN_OR_RANKING_PATTERNS = [
     re.compile(r"\btop\s+\d+\b"),
     re.compile(r"\bbottom\s+\d+\b"),
     re.compile(r"\brank(?:ed)?\s+by\b"),
@@ -217,22 +250,39 @@ _BREAKDOWN_OR_RANKING_PATTERNS = [
     re.compile(r"\blowest\b"),
     re.compile(r"\bmost\s+\w+"),
     re.compile(r"\bleast\s+\w+"),
-    re.compile(rf"\bby\s+(?:{_ENTITY_OR_GRAIN})\b"),
-    re.compile(rf"\b(?:for\s+)?each\s+(?:{_ENTITY_OR_GRAIN})\b"),
-    re.compile(rf"\bper\s+(?:{_ENTITY_OR_GRAIN})\b"),
-    re.compile(r"\b(?:broken\s+down|grouped|split)\s+by\b"),
-    re.compile(r"\b(?:yearly|monthly|quarterly|annually)\b"),
-    re.compile(r"\b(?:over|across|by)\s+(?:the\s+)?years?\b"),
+    re.compile(rf"\bby\s+(?:{_ENTITY})\b"),
+    re.compile(rf"\b(?:for\s+)?each\s+(?:{_ENTITY})\b"),
+    re.compile(rf"\bper\s+(?:{_ENTITY})\b"),
+    re.compile(rf"\b(?:broken\s+down|grouped|split)\s+by\s+(?:{_ENTITY})\b"),
     re.compile(
         r"\b(?:who|which)\b.+\b(?:customers?|companies|products?|employees?|countries)\b"
     ),
 ]
 
+_GRAIN_SQL: dict[str, tuple[str, str]] = {
+    # grain -> (select expression template with {dim}, alias)
+    "year": ("strftime('%Y', {dim})", "Year"),
+    "month": ("strftime('%Y-%m', {dim})", "Month"),
+    "quarter": (
+        "(strftime('%Y', {dim}) || '-Q' || ((CAST(strftime('%m', {dim}) AS INTEGER) + 2) / 3))",
+        "Quarter",
+    ),
+}
 
-def _requires_breakdown_or_ranking(question: str) -> bool:
-    """True when the question needs grouping/ranking the scalar metric compiler cannot emit."""
+
+def _detect_time_group_grain(question: str) -> str | None:
+    """Return year/month/quarter when the question asks for a time-series breakdown."""
     q = _normalize(question)
-    return any(p.search(q) for p in _BREAKDOWN_OR_RANKING_PATTERNS)
+    for grain, pat in _TIME_GROUP_GRAIN_PATTERNS:
+        if pat.search(q):
+            return grain
+    return None
+
+
+def _requires_entity_breakdown_or_ranking(question: str) -> bool:
+    """True when the question needs entity grouping/ranking compile_sql cannot emit."""
+    q = _normalize(question)
+    return any(p.search(q) for p in _ENTITY_BREAKDOWN_OR_RANKING_PATTERNS)
 
 
 def _detect_metric_intent(question: str, profile: UserProfile) -> tuple[list[str], float]:
@@ -273,6 +323,26 @@ def _detect_metric_intent(question: str, profile: UserProfile) -> tuple[list[str
 
     if not scores:
         return [], 0.0
+
+    # Explicit metric name / multi-word synonym in the question wins — no clarification.
+    # Prevents "recognized revenue" from also matching persona default "revenue" → booked.
+    explicit: list[tuple[str, int]] = []
+    for mid, m in metrics.items():
+        phrases = [mid.replace("_", " "), _normalize(m.get("label", ""))]
+        for syn in m.get("synonyms") or []:
+            ns = _normalize(syn)
+            if " " in ns:
+                phrases.append(ns)
+        best_len = 0
+        for phrase in phrases:
+            if phrase and phrase in q:
+                best_len = max(best_len, len(phrase))
+        if best_len:
+            explicit.append((mid, best_len))
+    if explicit:
+        explicit.sort(key=lambda x: -x[1])
+        mid = explicit[0][0]
+        return [mid], max(scores.get(mid, 0.95), 0.95)
 
     ranked = sorted(scores.items(), key=lambda x: -x[1])
     top_id, top_score = ranked[0]
@@ -353,8 +423,14 @@ def _parse_time_range(question: str, profile: UserProfile) -> tuple[tuple[str, s
     return None, None
 
 
-def _params_hash(metric_id: str, profile_id: str, time_range: tuple[str, str] | None, scope_key: str) -> str:
-    raw = f"{profile_id}|{metric_id}|{time_range}|{scope_key}"
+def _params_hash(
+    metric_id: str,
+    profile_id: str,
+    time_range: tuple[str, str] | None,
+    scope_key: str,
+    group_by_grain: str | None = None,
+) -> str:
+    raw = f"{profile_id}|{metric_id}|{time_range}|{scope_key}|{group_by_grain or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -400,9 +476,11 @@ def resolve_metric(
     session_prefs = session_prefs or {}
     metrics = load_metrics().get("metrics", {})
 
-    # Scalar fast path cannot answer ranked/grouped questions — fall back to agent.
-    if _requires_breakdown_or_ranking(question):
+    # Entity rankings / non-time GROUP BY still need the agent.
+    if _requires_entity_breakdown_or_ranking(question):
         return ResolutionResult(status="no_metric")
+
+    group_by_grain = _detect_time_group_grain(question)
 
     # Clarification override from session
     forced_metric = session_prefs.get("metric_id")
@@ -420,10 +498,15 @@ def resolve_metric(
         return ResolutionResult(
             status="needs_clarification",
             clarification=clarification,
+            group_by_grain=group_by_grain,
         )
 
     metric_id = candidates[0]
     metric = metrics[metric_id]
+
+    # Time-series breakdown requires a metric date column to GROUP BY.
+    if group_by_grain and not metric.get("time_dimension"):
+        return ResolutionResult(status="no_metric")
 
     time_range, time_label = _parse_time_range(question, user_profile)
     extra_joins, scope_filters, extra_tables = build_scope_filters(user_profile)
@@ -433,6 +516,8 @@ def resolve_metric(
         f"Metric: {metric.get('label')}",
         f"Date basis: {metric.get('time_dimension_label')}",
     ]
+    if group_by_grain:
+        assumptions.append(f"Breakdown: by {group_by_grain}")
     if time_label:
         assumptions.append(f"Period: {time_label}")
     if user_profile.region:
@@ -442,7 +527,7 @@ def resolve_metric(
     assumptions.append(f"Time anchor: latest data through {ref}")
 
     scope_key = "|".join(scope_filters)
-    phash = _params_hash(metric_id, user_profile.id, time_range, scope_key)
+    phash = _params_hash(metric_id, user_profile.id, time_range, scope_key, group_by_grain)
 
     result = ResolutionResult(
         status="ready",
@@ -452,6 +537,7 @@ def resolve_metric(
         time_dimension_label=metric.get("time_dimension_label"),
         time_range=time_range,
         time_range_label=time_label,
+        group_by_grain=group_by_grain,
         scope_filters=scope_filters,
         scope_joins=extra_joins,
         scope_label=user_profile.region,
@@ -510,10 +596,21 @@ def compile_sql(resolution: ResolutionResult) -> CompiledQuery | None:
     expr = metric.get("expression") or metric.get("select_label") or resolution.metric_id
     alias = metric.get("select_label") or resolution.metric_id
 
-    sql = (
-        f"SELECT {expr} AS {alias}\n"
-        f"FROM {from_clause}{where_sql}"
-    )
+    grain = resolution.group_by_grain
+    if grain and resolution.time_dimension and grain in _GRAIN_SQL:
+        grain_tmpl, grain_alias = _GRAIN_SQL[grain]
+        grain_expr = grain_tmpl.format(dim=resolution.time_dimension)
+        sql = (
+            f"SELECT {grain_expr} AS {grain_alias}, {expr} AS {alias}\n"
+            f"FROM {from_clause}{where_sql}\n"
+            f"GROUP BY {grain_alias}\n"
+            f"ORDER BY {grain_alias}"
+        )
+    else:
+        sql = (
+            f"SELECT {expr} AS {alias}\n"
+            f"FROM {from_clause}{where_sql}"
+        )
 
     return CompiledQuery(
         sql=sql,
@@ -623,6 +720,8 @@ def build_semantic_prompt_addon(resolution: ResolutionResult, compiled: Compiled
         f"- Metric: {resolution.metric_label} ({resolution.metric_id})",
         f"- Date basis: {resolution.time_dimension_label} ({resolution.time_dimension})",
     ]
+    if resolution.group_by_grain:
+        lines.append(f"- Breakdown: by {resolution.group_by_grain}")
     if resolution.time_range_label:
         lines.append(f"- Time period: {resolution.time_range_label}")
     if resolution.scope_label:
