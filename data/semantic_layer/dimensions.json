@@ -1,0 +1,56 @@
+{
+  "time_grains": {
+    "last_month": {
+      "label": "Last month",
+      "patterns": ["last month", "previous month", "prior month"],
+      "offset_months": -1,
+      "grain": "month"
+    },
+    "this_month": {
+      "label": "This month",
+      "patterns": ["this month", "current month"],
+      "offset_months": 0,
+      "grain": "month"
+    },
+    "last_year": {
+      "label": "Last year",
+      "patterns": ["last year", "previous year"],
+      "offset_years": -1,
+      "grain": "year"
+    },
+    "this_year": {
+      "label": "This year",
+      "patterns": ["this year", "current year", "year to date", "ytd"],
+      "offset_years": 0,
+      "grain": "year"
+    }
+  },
+  "region_mappings": {
+    "Western Europe": {
+      "ship_countries": [
+        "Germany",
+        "France",
+        "UK",
+        "Spain",
+        "Italy",
+        "Belgium",
+        "Austria",
+        "Switzerland",
+        "Ireland",
+        "Portugal",
+        "Sweden",
+        "Finland",
+        "Denmark",
+        "Norway",
+        "Poland"
+      ],
+      "filter_template": "o.ShipCountry IN ({ship_countries})"
+    },
+    "North America": {
+      "ship_countries": ["USA", "Canada", "Mexico"],
+      "filter_template": "o.ShipCountry IN ({ship_countries})"
+    },
+    "Global": {}
+  },
+  "default_timezone": "UTC"
+}

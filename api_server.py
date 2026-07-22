@@ -6,7 +6,7 @@ import json
 import queue
 import threading
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
@@ -21,6 +21,7 @@ from copilot_utils import (
     CODER_FUNCTIONS_SPEC2,
     Smart_Agent,
     extract_sql_query,
+    get_embedding,
 )
 from guardrails import (
     GuardrailType,
@@ -30,7 +31,26 @@ from guardrails import (
     mark_soft_rules_applied,
     prompt_addons,
 )
+from pending_metrics import (
+    approve_proposal,
+    create_proposal,
+    get_proposal,
+    list_proposals,
+    pending_count,
+    reject_proposal,
+    update_proposal,
+)
+from query_cache import get_query_cache
 from runtime import RuntimeContext, set_runtime
+from semantic_layer import (
+    build_semantic_prompt_addon,
+    compile_sql,
+    list_metrics,
+    resolve_metric,
+    run_sanity_checks,
+    validate_compiled,
+)
+from user_context import get_profile_store
 from visualization_utils import chart_display_payload, table_display_payload
 
 app = FastAPI(title="Analytic Copilot API", version="1.0.0")
@@ -48,18 +68,26 @@ INIT_MESSAGE = (
 )
 
 SAMPLE_QUESTIONS = [
+    "Give me revenue of last month",
+    "What was recognized revenue in October 2023?",
     "What were the total sales for each year available in the database?",
-    "Who are the top 5 customers by order volume, and what is the total number of orders for each?",
-    "What are the top 10 most popular products based on quantity sold?",
-    "What are the total sales broken down by country?",
+    "Who are the top 5 customers by order volume?",
 ]
 
 _sessions: dict[str, dict[str, Any]] = {}
 
 
+class ClarificationResponse(BaseModel):
+    clarification_id: str
+    option_id: str
+    metric_id: str | None = None
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
+    user_profile_id: str = "regional_manager_we"
+    clarification_response: ClarificationResponse | None = None
     show_internal_thoughts: bool = False
     attached_guardrail_ids: list[str] = Field(default_factory=list)
 
@@ -68,12 +96,28 @@ class ClearRequest(BaseModel):
     session_id: str
 
 
+class FeedbackRequest(BaseModel):
+    session_id: str
+    message_id: str
+    verdict: Literal["correct", "wrong_metric", "wrong_scope"]
+    note: str | None = None
+
+
 class GuardrailUpsertRequest(BaseModel):
     id: Optional[str] = None
     name: str
     type: GuardrailType
     description: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalUpdateRequest(BaseModel):
+    proposed_sql: str | None = None
+    draft_metric: dict[str, Any] | None = None
+
+
+class ApprovalRejectRequest(BaseModel):
+    reason: str = ""
 
 
 def _serialize_display_data(data: Any) -> dict | None:
@@ -108,7 +152,6 @@ def _flatten_displays(items: list) -> list[dict]:
 
 
 def _augment_displays(displays: list[dict]) -> list[dict]:
-    """Add auto charts for table-only results when visualization is possible."""
     if any(d.get("type") == "chart" for d in displays):
         return displays
 
@@ -128,9 +171,38 @@ def _augment_displays(displays: list[dict]) -> list[dict]:
     return augmented
 
 
-def _get_or_create_session(session_id: str | None) -> tuple[str, dict[str, Any]]:
+def _format_semantic_answer(resolution, profile, df: pd.DataFrame | None) -> str:
+    period = resolution.time_range_label or "the requested period"
+    scope = profile.region or "Global"
+    if df is not None and len(df) == 1:
+        val = df.iloc[0, 0]
+        if isinstance(val, float):
+            return (
+                f"The **{resolution.metric_label}** for {period}, "
+                f"for orders in **{scope}**, was **${val:,.2f}**."
+            )
+        return (
+            f"The **{resolution.metric_label}** for {period}, "
+            f"for orders in **{scope}**, was **{val}**."
+        )
+    return (
+        f"The **{resolution.metric_label}** for {period}, "
+        f"for orders in **{scope}**."
+    )
+
+
+def _append_assistant_turn(session: dict[str, Any], question: str, answer: str) -> None:
+    history = session.get("history") or []
+    history.append({"role": "user", "content": question})
+    history.append({"role": "assistant", "content": answer})
+    session["history"] = history
+
+
+def _get_or_create_session(session_id: str | None, user_profile_id: str) -> tuple[str, dict[str, Any]]:
     if session_id and session_id in _sessions:
-        return session_id, _sessions[session_id]
+        sess = _sessions[session_id]
+        sess["user_profile_id"] = user_profile_id
+        return session_id, sess
 
     new_id = session_id or str(uuid.uuid4())
     agent = Smart_Agent(
@@ -145,8 +217,42 @@ def _get_or_create_session(session_id: str | None) -> tuple[str, dict[str, Any]]
         "history": agent.conversation,
         "displays": [],
         "attached_guardrail_ids": [],
+        "user_profile_id": user_profile_id,
+        "resolved_preferences": {},
+        "pending_clarification": None,
+        "last_resolution": None,
+        "last_compiled": None,
+        "last_question": None,
     }
     return new_id, _sessions[new_id]
+
+
+def _execute_compiled_sql(compiled, attached, on_event) -> tuple[pd.DataFrame | None, list[dict]]:
+    from guardrails import apply_row_cap, evaluate_sql
+
+    displays: list[dict] = []
+    try:
+        sql_checks = evaluate_sql(compiled.sql, attached, on_event=on_event)
+        if any_blocked(sql_checks):
+            return None, displays
+        df = pd.read_sql_query(compiled.sql, _get_engine())
+        df = df.infer_objects()
+        if attached:
+            df, _ = apply_row_cap(df, attached, on_event=on_event)
+        serialized = _serialize_display_data(df)
+        if isinstance(serialized, list):
+            displays.extend(serialized)
+        elif serialized:
+            displays.append(serialized)
+        return df, displays
+    except Exception as exc:
+        on_event("step_error", {"step": "execute", "detail": str(exc)})
+        return None, displays
+
+
+def _get_engine():
+    from copilot_utils import engine
+    return engine
 
 
 @app.get("/api/health")
@@ -157,6 +263,85 @@ def health():
 @app.get("/api/sample-questions")
 def sample_questions():
     return {"questions": SAMPLE_QUESTIONS}
+
+
+@app.get("/api/user-profiles")
+def user_profiles():
+    return {"profiles": [p.to_dict() for p in get_profile_store().list()]}
+
+
+@app.get("/api/semantic/metrics")
+def semantic_metrics():
+    return {"metrics": list_metrics()}
+
+
+@app.get("/api/approvals")
+def approvals_list(status: str | None = None):
+    return {
+        "proposals": list_proposals(status=status),
+        "pending_count": pending_count(),
+    }
+
+
+@app.get("/api/approvals/{proposal_id}")
+def approvals_get(proposal_id: str):
+    proposal = get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return {"proposal": proposal}
+
+
+@app.patch("/api/approvals/{proposal_id}")
+def approvals_update(proposal_id: str, req: ApprovalUpdateRequest):
+    try:
+        proposal = update_proposal(
+            proposal_id,
+            proposed_sql=req.proposed_sql,
+            draft_metric=req.draft_metric,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"proposal": proposal}
+
+
+@app.post("/api/approvals/{proposal_id}/approve")
+def approvals_approve(proposal_id: str):
+    try:
+        proposal = approve_proposal(proposal_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Seed query cache so similar questions can reuse approved SQL
+    draft = proposal.get("draft_metric") or {}
+    metric_id = proposal.get("approved_metric_id") or draft.get("id")
+    sql = proposal.get("proposed_sql") or ""
+    profile_id = proposal.get("profile_id") or "regional_manager_we"
+    if metric_id and sql:
+        cache = get_query_cache(get_embedding)
+        cache.store(
+            user_profile_id=profile_id,
+            metric_id=metric_id,
+            params_hash="approved",
+            natural_language=proposal.get("question") or "",
+            sql=sql,
+            assumptions=[f"Approved pending metric: {draft.get('label', metric_id)}"],
+        )
+    return {"proposal": proposal, "pending_count": pending_count()}
+
+
+@app.post("/api/approvals/{proposal_id}/reject")
+def approvals_reject(proposal_id: str, req: ApprovalRejectRequest):
+    try:
+        proposal = reject_proposal(proposal_id, reason=req.reason)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"proposal": proposal, "pending_count": pending_count()}
 
 
 @app.get("/api/guardrails")
@@ -196,51 +381,97 @@ def clear_session(req: ClearRequest):
     return {"ok": True}
 
 
+@app.post("/api/feedback")
+def submit_feedback(req: FeedbackRequest):
+    session = _sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    cache = get_query_cache(get_embedding)
+    profile_id = session.get("user_profile_id", "regional_manager_we")
+    resolution = session.get("last_resolution")
+    compiled = session.get("last_compiled")
+    question = session.get("last_question", "")
+
+    if req.verdict == "correct" and resolution and compiled:
+        cache.store(
+            user_profile_id=profile_id,
+            metric_id=resolution.metric_id,
+            params_hash=resolution.params_hash or "",
+            natural_language=question,
+            sql=compiled.sql,
+            assumptions=compiled.assumptions,
+        )
+        return {"ok": True, "cached": True, "message": "Query cached for 14 days."}
+
+    if req.verdict in ("wrong_metric", "wrong_scope") and resolution:
+        cache.invalidate(profile_id, resolution.metric_id, resolution.params_hash)
+        prefs = session.get("resolved_preferences") or {}
+        if req.verdict == "wrong_metric":
+            prefs.pop("metric_id", None)
+        session["resolved_preferences"] = prefs
+        return {"ok": True, "cached": False, "message": "Cache invalidated. Please re-ask your question."}
+
+    return {"ok": True, "cached": False}
+
+
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-    if not req.message.strip():
+    if not req.message.strip() and not req.clarification_response:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    session_id, session = _get_or_create_session(req.session_id)
+    session_id, session = _get_or_create_session(req.session_id, req.user_profile_id)
     session["attached_guardrail_ids"] = list(req.attached_guardrail_ids or [])
     attached = get_store().get_many(session["attached_guardrail_ids"])
     addon = prompt_addons(attached)
+
+    profile = get_profile_store().get_or_default(req.user_profile_id)
+    cache = get_query_cache(get_embedding)
+
+    if req.clarification_response:
+        prefs = session.get("resolved_preferences") or {}
+        mid = req.clarification_response.metric_id or req.clarification_response.option_id
+        prefs["metric_id"] = mid
+        session["resolved_preferences"] = prefs
+        session["pending_clarification"] = None
+        if not req.message.strip():
+            req.message = session.get("last_question") or "Continue with selected metric"
 
     event_queue: queue.Queue = queue.Queue()
     displays: list[dict] = []
 
     def on_event(event_type: str, payload: dict):
+        if event_type == "context_retrieval":
+            session["last_context_retrieval"] = payload
         event_queue.put({"type": event_type, **payload})
 
     def on_display(display_payload: dict):
         displays.append(display_payload)
         event_queue.put({"type": "display", "display": display_payload})
 
-    runtime = RuntimeContext(
-        on_display=on_display,
-        show_internal_thoughts=req.show_internal_thoughts,
-        attached_guardrails=attached,
-        on_event=on_event,
-        guardrail_prompt_addon=addon,
-    )
+    def cache_lookup(profile_id, metric_id, params_hash, nl):
+        hit = cache.lookup(profile_id, metric_id, params_hash, nl)
+        if hit:
+            return {"sql": hit["sql"], "approved_at": hit.get("approved_at")}
+        return None
 
     def run_agent():
-        set_runtime(runtime)
+        set_runtime(None)
         try:
-            # Pipeline stage: Guardrails
-            on_event(
-                "step_start",
-                {
-                    "step": "guardrails",
-                    "label": "Applying guardrails",
-                    "detail": (
-                        f"{len(attached)} guardrail(s) attached"
-                        if attached
-                        else "No guardrails attached"
-                    ),
-                },
-            )
+            on_event("user_context", {
+                "profile_id": profile.id,
+                "display_name": profile.display_name,
+                "role": profile.role,
+                "region": profile.region,
+                "defaults": profile.metric_defaults,
+            })
 
+            # Guardrails
+            on_event("step_start", {
+                "step": "guardrails",
+                "label": "Applying guardrails",
+                "detail": f"{len(attached)} guardrail(s) attached" if attached else "No guardrails attached",
+            })
             topic_results = evaluate_question(req.message, attached, on_event=on_event)
             mark_soft_rules_applied(attached, on_event=on_event)
 
@@ -250,57 +481,224 @@ def chat(req: ChatRequest):
                     f"I can't help with that request because the **{blocked.name}** "
                     f"guardrail blocked it.\n\n{blocked.detail}"
                 )
-                on_event(
-                    "step_error",
-                    {"step": "guardrails", "detail": blocked.detail},
-                )
-                event_queue.put(
-                    {
-                        "type": "done",
-                        "session_id": session_id,
-                        "answer": answer,
-                        "code": None,
-                        "sql": None,
-                        "displays": [],
-                        "guardrail_blocked": True,
-                    }
-                )
+                on_event("step_error", {"step": "guardrails", "detail": blocked.detail})
+                event_queue.put({
+                    "type": "done",
+                    "session_id": session_id,
+                    "answer": answer,
+                    "code": None,
+                    "sql": None,
+                    "displays": [],
+                    "guardrail_blocked": True,
+                })
                 return
 
-            on_event(
-                "step_complete",
-                {
-                    "step": "guardrails",
-                    "detail": (
-                        f"Passed pre-checks · {len(attached)} active"
-                        if attached
-                        else "Skipped (none attached)"
-                    ),
-                },
+            on_event("step_complete", {
+                "step": "guardrails",
+                "detail": f"Passed pre-checks · {len(attached)} active" if attached else "Skipped (none attached)",
+            })
+
+            session["last_question"] = req.message
+
+            # Understand
+            on_event("step_start", {"step": "understand", "label": "Understanding your question", "detail": req.message})
+            on_event("step_complete", {"step": "understand"})
+
+            # Resolve
+            on_event("step_start", {"step": "resolve", "label": "Resolving metric & scope", "detail": f"Persona: {profile.display_name}"})
+            resolution = resolve_metric(
+                req.message,
+                profile,
+                session_prefs=session.get("resolved_preferences"),
+                cache_lookup=cache_lookup,
             )
+            session["last_resolution"] = resolution
+
+            if resolution.status == "needs_clarification" and resolution.clarification:
+                session["pending_clarification"] = resolution.clarification.to_dict()
+                on_event("step_complete", {"step": "resolve", "detail": "Ambiguity detected — awaiting your choice"})
+                on_event("clarification_needed", resolution.clarification.to_dict())
+                on_event("metric_resolved", {"status": "needs_clarification"})
+                event_queue.put({
+                    "type": "done",
+                    "session_id": session_id,
+                    "answer": resolution.clarification.question,
+                    "awaiting_clarification": True,
+                    "clarification": resolution.clarification.to_dict(),
+                    "displays": [],
+                })
+                return
+
+            if resolution.status == "no_metric":
+                on_event("step_complete", {"step": "resolve", "detail": "No semantic metric matched — falling back to agent"})
+            else:
+                on_event("metric_resolved", resolution.to_dict())
+                if resolution.cache_hit:
+                    on_event("cache_hit", {
+                        "metric_id": resolution.metric_id,
+                        "cached_at": "recent",
+                        "expires_at": "14-day TTL",
+                    })
+                    on_event("step_complete", {"step": "resolve", "detail": f"Matched {resolution.metric_label} · CACHE HIT"})
+                else:
+                    on_event("step_complete", {"step": "resolve", "detail": f"Matched {resolution.metric_label} · cache miss"})
+
+            compiled = compile_sql(resolution) if resolution.status == "ready" else None
+            session["last_compiled"] = compiled
+            semantic_addon = build_semantic_prompt_addon(resolution, compiled) if resolution.status == "ready" else ""
+
+            runtime = RuntimeContext(
+                on_display=on_display,
+                show_internal_thoughts=req.show_internal_thoughts,
+                attached_guardrails=attached,
+                on_event=on_event,
+                guardrail_prompt_addon=addon,
+                semantic_prompt_addon=semantic_addon,
+                user_profile=profile,
+                resolved_metric=resolution,
+                compiled_query=compiled,
+            )
+            set_runtime(runtime)
+
+            # Validate pre-execution
+            sanity_result = None
+            validation_result = None
+            df_from_cache = None
+            code = None
+            data = {}
+
+            if compiled:
+                on_event("step_start", {"step": "validate", "label": "Validating compiled SQL"})
+                validation_result = validate_compiled(compiled, profile)
+                on_event("validation_result", validation_result.to_dict())
+                if validation_result.passed:
+                    on_event("step_complete", {"step": "validate", "detail": f"{len(validation_result.checks)} checks passed"})
+                else:
+                    on_event("step_error", {"step": "validate", "detail": "Validation failed"})
+                    failed = [c for c in validation_result.checks if c.status != "passed"]
+                    event_queue.put({
+                        "type": "done",
+                        "session_id": session_id,
+                        "answer": f"Validation failed: {failed[0].detail if failed else 'unknown'}",
+                        "displays": [],
+                    })
+                    return
 
             agent: Smart_Agent = session["agent"]
             agent.on_event = on_event
-            _, code, history, answer, data = agent.run(
-                user_input=req.message,
-                conversation=session["history"],
-                stream=False,
-            )
-            session["history"] = history
+            answer = ""
+            used_compiled_sql = False
+
+            # Validated semantic SQL: execute directly so persona scope matches the table
+            if compiled and validation_result and validation_result.passed:
+                on_event("step_start", {
+                    "step": "plan",
+                    "label": "Using selected persona",
+                    "detail": profile.display_name,
+                })
+                on_event("step_complete", {
+                    "step": "plan",
+                    "detail": (
+                        f"Persona: {profile.display_name} ({profile.role}"
+                        f"{f', {profile.region}' if profile.region else ''}) · "
+                        "semantic fast path — agent planner not needed"
+                    ),
+                })
+                tables_label = ", ".join(resolution.tables) if resolution.tables else "metric tables"
+                on_event("step_start", {
+                    "step": "context",
+                    "label": "Using metric table scope",
+                    "detail": tables_label,
+                })
+                on_event("step_complete", {
+                    "step": "context",
+                    "detail": (
+                        f"Skipped scenario RAG — resolved metric already scopes tables: {tables_label}"
+                    ),
+                })
+                generate_label = "Using cached SQL" if resolution.cache_hit else "Using compiled semantic SQL"
+                on_event("step_start", {"step": "generate", "label": generate_label, "code": compiled.sql})
+                on_event("step_complete", {"step": "generate", "code": compiled.sql})
+                execute_label = "Executing cached query" if resolution.cache_hit else "Executing compiled query"
+                on_event("step_start", {"step": "execute", "label": execute_label})
+                df_from_cache, cache_displays = _execute_compiled_sql(compiled, attached, on_event)
+                displays.extend(cache_displays)
+                on_event("step_complete", {"step": "execute"})
+                on_event("step_start", {"step": "sanity", "label": "Running sanity checks"})
+                if df_from_cache is not None:
+                    sanity_result = run_sanity_checks(df_from_cache, resolution)
+                    on_event("sanity_result", sanity_result.to_dict())
+                    on_event("step_complete", {"step": "sanity", "detail": f"{sanity_result.row_count} rows"})
+                    used_compiled_sql = True
+                    code = compiled.sql
+                    answer = _format_semantic_answer(resolution, profile, df_from_cache)
+                    _append_assistant_turn(session, req.message, answer)
+
+            if not used_compiled_sql:
+                _, code, history, answer, data = agent.run(
+                    user_input=req.message,
+                    conversation=session["history"],
+                    stream=False,
+                )
+                session["history"] = history
+
+                on_event("step_start", {"step": "sanity", "label": "Running sanity checks"})
+                for v in data.values():
+                    if isinstance(v, pd.DataFrame):
+                        sanity_result = run_sanity_checks(v, resolution)
+                        on_event("sanity_result", sanity_result.to_dict())
+                        break
+                if sanity_result:
+                    on_event("step_complete", {"step": "sanity", "detail": f"{sanity_result.row_count} rows"})
+                else:
+                    on_event("step_complete", {"step": "sanity", "detail": "No tabular result to check"})
+
             session["displays"] = displays
 
             serialized_displays = _augment_displays(
-                _flatten_displays(
-                    displays
-                    or [
-                        d
-                        for v in data.values()
-                        for d in (_serialize_display_data(v),)
-                        if d is not None
-                    ]
-                )
+                _flatten_displays(displays)
             )
-            sql = extract_sql_query(code) if code else None
+            sql = compiled.sql if compiled else (extract_sql_query(code) if code else None)
+
+            pending_proposal = None
+            if resolution.status == "no_metric" and sql:
+                ctx = session.get("last_context_retrieval") or {}
+                try:
+                    pending_proposal = create_proposal(
+                        question=req.message,
+                        proposed_sql=sql,
+                        profile_id=profile.id,
+                        scenario_hits=ctx.get("scenarios") or [],
+                    )
+                    on_event("pending_proposal", {
+                        "proposal_id": pending_proposal["id"],
+                        "question": pending_proposal["question"],
+                        "proposed_sql": pending_proposal["proposed_sql"],
+                        "draft_metric": pending_proposal.get("draft_metric"),
+                        "scenario_hits": pending_proposal.get("scenario_hits") or [],
+                    })
+                    answer = (
+                        (answer or "")
+                        + "\n\n---\n"
+                        + "No approved semantic metric matched this question. "
+                        + "The generated SQL was submitted for analyst approval "
+                        + f"(proposal `{pending_proposal['id']}`). "
+                        + "Open the **Approvals** tab to verify or edit it before it becomes a metric."
+                    )
+                except Exception as exc:
+                    on_event("step_error", {"step": "confirm", "detail": f"Failed to queue proposal: {exc}"})
+
+            on_event("step_start", {"step": "respond", "label": "Composing final answer"})
+            on_event("step_complete", {"step": "respond", "answer": answer})
+            if pending_proposal:
+                on_event("step_start", {"step": "confirm", "label": "Queued for analyst approval"})
+                on_event("step_complete", {
+                    "step": "confirm",
+                    "detail": f"Pending approval: {pending_proposal['id']}",
+                })
+            else:
+                on_event("step_start", {"step": "confirm", "label": "Awaiting your validation"})
+                on_event("step_complete", {"step": "confirm", "detail": "Confirm whether this data is correct"})
 
             event_queue.put({
                 "type": "done",
@@ -309,6 +707,30 @@ def chat(req: ChatRequest):
                 "code": code,
                 "sql": sql,
                 "displays": serialized_displays,
+                "resolution": (
+                    resolution.to_dict()
+                    if resolution.status == "ready"
+                    else {
+                        "status": "no_metric",
+                        "assumptions": [
+                            "No approved semantic metric matched",
+                            "Answer produced via agent-generated SQL",
+                            *(
+                                [f"Pending approval: {pending_proposal['id']}"]
+                                if pending_proposal
+                                else []
+                            ),
+                        ],
+                    }
+                    if resolution.status == "no_metric"
+                    else None
+                ),
+                "sanity": sanity_result.to_dict() if sanity_result else None,
+                "validation": validation_result.to_dict() if validation_result else None,
+                "awaiting_confirmation": resolution.status == "ready",
+                "cache_eligible": resolution.status == "ready" and not resolution.cache_hit,
+                "pending_approval": pending_proposal is not None,
+                "proposal_id": pending_proposal["id"] if pending_proposal else None,
             })
         except Exception as exc:
             event_queue.put({"type": "error", "detail": str(exc)})

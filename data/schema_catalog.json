@@ -1,0 +1,196 @@
+{
+  "dim": 1536,
+  "entries": [
+    {
+      "table": "orders",
+      "text": "Table orders: Records of all orders placed.. Columns: OrderID INT, CustomerID VARCHAR, EmployeeID INT, OrderDate DATE, RequiredDate DATE, ShippedDate DATE, ShipVia INT, Freight DECIMAL, ShipName VARCHAR, ShipAddress VARCHAR, ShipCity VARCHAR, ShipRegion VARCHAR, ShipPostalCode VARCHAR, ShipCountry VARCHAR",
+      "type": "table"
+    },
+    {
+      "table": "customers",
+      "text": "Table customers: Information about customers.. Columns: CustomerID VARCHAR, CompanyName VARCHAR, ContactName VARCHAR, ContactTitle VARCHAR, Address VARCHAR, City VARCHAR, Region VARCHAR, PostalCode VARCHAR, Country VARCHAR, Phone VARCHAR, Fax VARCHAR",
+      "type": "table"
+    },
+    {
+      "table": "[Order Details]",
+      "text": "Table [Order Details]: Details of individual products within an order.. Columns: OrderID INT, ProductID INT, UnitPrice DECIMAL, Quantity SMALLINT, Discount DOUBLE",
+      "type": "table"
+    },
+    {
+      "table": "products",
+      "text": "Table products: Information about products.. Columns: ProductID INT, ProductName VARCHAR, SupplierID INT, CategoryID INT, QuantityPerUnit VARCHAR, UnitPrice DECIMAL, UnitsInStock SMALLINT, UnitsOnOrder SMALLINT, ReorderLevel SMALLINT, Discontinued BIT",
+      "type": "table"
+    },
+    {
+      "table": "employees",
+      "text": "Table employees: Information about company employees.. Columns: EmployeeID INT, LastName VARCHAR, FirstName VARCHAR, Title VARCHAR, TitleOfCourtesy VARCHAR, BirthDate DATE, HireDate DATE, Address VARCHAR, City VARCHAR, Region VARCHAR, PostalCode VARCHAR, Country VARCHAR, HomePhone VARCHAR, Extension VARCHAR, Photo LONGBLOB, Notes MEDIUMTEXT, ReportsTo INT, PhotoPath VARCHAR, Salary FLOAT",
+      "type": "table"
+    },
+    {
+      "table": "shippers",
+      "text": "Table shippers: Information about shipping companies.. Columns: ShipperID INT, CompanyName VARCHAR, Phone VARCHAR",
+      "type": "table"
+    },
+    {
+      "table": "suppliers",
+      "text": "Table suppliers: Information about product suppliers.. Columns: SupplierID INT, CompanyName VARCHAR, ContactName VARCHAR, ContactTitle VARCHAR, Address VARCHAR, City VARCHAR, Region VARCHAR, PostalCode VARCHAR, Country VARCHAR, Phone VARCHAR, Fax VARCHAR, HomePage MEDIUMTEXT",
+      "type": "table"
+    },
+    {
+      "table": "categories",
+      "text": "Table categories: Categories of products.. Columns: CategoryID INT, CategoryName VARCHAR, Description MEDIUMTEXT, Picture LONGBLOB",
+      "type": "table"
+    },
+    {
+      "table": "territories",
+      "text": "Table territories: Sales territories.. Columns: TerritoryID VARCHAR, TerritoryDescription VARCHAR, RegionID INT",
+      "type": "table"
+    },
+    {
+      "table": "employeeTerritories",
+      "text": "Table employeeTerritories: Mapping of which employees cover which territories.. Columns: EmployeeID INT, TerritoryID VARCHAR",
+      "type": "table"
+    },
+    {
+      "table": "region",
+      "text": "Table region: Different regions.. Columns: RegionID INT, RegionDescription VARCHAR",
+      "type": "table"
+    },
+    {
+      "table": "customerDemographics",
+      "text": "Table customerDemographics: Types of customer demographics.. Columns: CustomerTypeID VARCHAR, CustomerDesc MEDIUMTEXT",
+      "type": "table"
+    },
+    {
+      "table": "customerCustomerDemo",
+      "text": "Table customerCustomerDemo: Linking table for customers and their demographics.. Columns: CustomerID VARCHAR, CustomerTypeID VARCHAR",
+      "type": "table"
+    },
+    {
+      "table": "orders",
+      "related": "customers",
+      "text": "Relationship: orders to customers \u2014 Orders are placed by customers using CustomerID.",
+      "type": "relationship"
+    },
+    {
+      "table": "orders",
+      "related": "employees",
+      "text": "Relationship: orders to employees \u2014 Orders are processed by employees using EmployeeID.",
+      "type": "relationship"
+    },
+    {
+      "table": "orders",
+      "related": "shippers",
+      "text": "Relationship: orders to shippers \u2014 Orders are shipped by shippers using ShipVia as ShipperID.",
+      "type": "relationship"
+    },
+    {
+      "table": "[Order Details]",
+      "related": "orders",
+      "text": "Relationship: [Order Details] to orders \u2014 Each order can have multiple [Order Details], linked by OrderID.",
+      "type": "relationship"
+    },
+    {
+      "table": "[Order Details]",
+      "related": "products",
+      "text": "Relationship: [Order Details] to products \u2014 Each order detail pertains to a single product, linked by ProductID.",
+      "type": "relationship"
+    },
+    {
+      "table": "products",
+      "related": "suppliers",
+      "text": "Relationship: products to suppliers \u2014 Products are supplied by suppliers using SupplierID.",
+      "type": "relationship"
+    },
+    {
+      "table": "products",
+      "related": "categories",
+      "text": "Relationship: products to categories \u2014 Products are categorized into categories using CategoryID.",
+      "type": "relationship"
+    },
+    {
+      "table": "employeeTerritories",
+      "related": "employees",
+      "text": "Relationship: employeeTerritories to employees \u2014 Employees are assigned to territories, linked by EmployeeID.",
+      "type": "relationship"
+    },
+    {
+      "table": "employeeTerritories",
+      "related": "territories",
+      "text": "Relationship: employeeTerritories to territories \u2014 Territories can have multiple employees, linked by TerritoryID.",
+      "type": "relationship"
+    },
+    {
+      "table": "customerCustomerDemo",
+      "related": "customers",
+      "text": "Relationship: customerCustomerDemo to customers \u2014 Customers can belong to multiple demographics, linked by CustomerID.",
+      "type": "relationship"
+    },
+    {
+      "table": "customerCustomerDemo",
+      "related": "customerDemographics",
+      "text": "Relationship: customerCustomerDemo to customerDemographics \u2014 Demographics can include multiple customers, linked by CustomerTypeID.",
+      "type": "relationship"
+    },
+    {
+      "scenario": "Customer Sales Analysis",
+      "table": "",
+      "text": "Scenario Customer Sales Analysis: Analyzing sales data by customer.. Rules: Revenue recognized on ShippedDate",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Inventory Management",
+      "table": "",
+      "text": "Scenario Inventory Management: Managing product stock levels.. Rules: Restock when UnitsInStock less than ReorderLevel",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Shipping Efficiency",
+      "table": "",
+      "text": "Scenario Shipping Efficiency: Optimizing shipping routes for efficiency.. Rules: Optimize routes based on ShipRegion and ShipCountry",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Employee Performance Tracking",
+      "table": "",
+      "text": "Scenario Employee Performance Tracking: Tracking employee order processing performance.. Rules: Performance evaluated on number of orders processed",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Product Profitability",
+      "table": "",
+      "text": "Scenario Product Profitability: Calculating profitability of products.. Rules: Profit calculated as UnitPrice minus Discount",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Customer Retention",
+      "table": "",
+      "text": "Scenario Customer Retention: Strategies to retain customers.. Rules: Follow-up if no orders in the past 12 months",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Supplier Relationship Management",
+      "table": "",
+      "text": "Scenario Supplier Relationship Management: Managing supplier relationships.. Rules: Assess supplier performance based on delivery times and product quality",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Market Segmentation",
+      "table": "",
+      "text": "Scenario Market Segmentation: Segmenting the market based on customer demographics.. Rules: Segment customers based on CustomerDemographics",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Sales Territory Performance",
+      "table": "",
+      "text": "Scenario Sales Territory Performance: Evaluating sales performance by territory.. Rules: Sales targets set based on TerritoryDescription; Revenue recognized on ShippedDate",
+      "type": "scenario"
+    },
+    {
+      "scenario": "Product Category Sales Trends",
+      "table": "",
+      "text": "Scenario Product Category Sales Trends: Analyzing sales trends within product categories.. Rules: Analyze sales trends by CategoryName; Revenue recognized on ShippedDate",
+      "type": "scenario"
+    }
+  ]
+}

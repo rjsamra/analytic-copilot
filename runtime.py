@@ -16,6 +16,10 @@ class RuntimeContext:
         attached_guardrails: Optional[list] = None,
         on_event: Optional[Callable[[str, dict], None]] = None,
         guardrail_prompt_addon: str = "",
+        semantic_prompt_addon: str = "",
+        user_profile: Any = None,
+        resolved_metric: Any = None,
+        compiled_query: Any = None,
     ):
         self._store: dict[str, Any] = {}
         self.show_internal_thoughts = show_internal_thoughts
@@ -24,6 +28,10 @@ class RuntimeContext:
         self.attached_guardrails = attached_guardrails or []
         self.on_event = on_event
         self.guardrail_prompt_addon = guardrail_prompt_addon
+        self.semantic_prompt_addon = semantic_prompt_addon
+        self.user_profile = user_profile
+        self.resolved_metric = resolved_metric
+        self.compiled_query = compiled_query
 
     def __getitem__(self, key: str) -> Any:
         return self._store[key]

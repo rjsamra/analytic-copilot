@@ -99,81 +99,182 @@ def execute_sql_query(sql_query, limit=100):
     # st.write(result)
     return result
 
-@retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(6))
-def retrieve_context(business_concepts):
-    # Load the metadata file
-    with open(os.getenv("META_DATA_FILE","data/metadata.json"), "r") as file:
-        data = json.load(file)
-
-    # Extract values from the loaded data
+def _llm_pick_scenarios(business_concepts: str, data: dict) -> list[str]:
+    """Fallback: ask the LLM which analytic scenarios apply."""
     analytic_scenarios = data.get("analytic_scenarios", {})
-    scenario_list = [(scenario[0], scenario[1]['description']) for scenario in analytic_scenarios.items()]
-    # create  scenario_list_md which is the a markdown table with column headers 'Scenario' and 'Description' from scenario_list
-    scenario_list_md = ""
-    for scenario in scenario_list:
-        scenario_list_md += f"| {scenario[0]} | {scenario[1]} |\n"
-    #add headers 'Scenario' and 'Description' to scenario_list_md
-    scenario_list_md = f"| Scenario | Description |\n| --- | --- |\n{scenario_list_md}"
+    scenario_list_md = "| Scenario | Description |\n| --- | --- |\n"
+    for name, info in analytic_scenarios.items():
+        scenario_list_md += f"| {name} | {info.get('description', '')} |\n"
 
     sys_msg = f"""
-    You are an AI assistant that helps people find information. 
-    You are given business concept(s) and you need to identify which one or several business analytic scenario(s) below are relevant to the them.
+    You are an AI assistant that helps people find information.
+    You are given business concept(s) and you need to identify which one or several business analytic scenario(s) below are relevant to them.
     <<analytic_scenarios>>
     {scenario_list_md}
     <</analytic_scenarios>>
-    Output your response in json format with the following structure:   
+    Output your response in json format with the following structure:
     {{
         "scenarios": [
             {{
-                "scenario_name": "...", # name of the scenario. 
+                "scenario_name": "..."
             }}
         ]
     }}
     """
-
     response = client.chat.completions.create(
-        model=chat_engine1, # The deployment name you chose when you deployed the GPT-35-turbo or GPT-4 model.
-        messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": business_concepts}],
-    response_format={"type": "json_object"}
-    
+        model=chat_engine1,
+        messages=[
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": business_concepts},
+        ],
+        response_format={"type": "json_object"},
     )
-    
     response_message = response.choices[0].message.content.strip()
-    # print("response_message: ", response_message)
-    scenario_names = json.loads(response_message)["scenarios"]
-    scenario_names = [scenario["scenario_name"] for scenario in scenario_names]
+    scenario_names = [s["scenario_name"] for s in json.loads(response_message)["scenarios"]]
+    valid = set(analytic_scenarios.keys())
+    return [n for n in scenario_names if n in valid]
 
-    # Extract values from the loaded data
+
+@retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(6))
+def retrieve_context(business_concepts):
+    with open(os.getenv("META_DATA_FILE", "data/metadata.json"), "r") as file:
+        data = json.load(file)
+
+    runtime = get_runtime()
+    on_event = getattr(runtime, "on_event", None)
+    resolved = getattr(runtime, "resolved_metric", None)
+    allowed_tables = None
+    if resolved and getattr(resolved, "tables", None):
+        allowed_tables = resolved.tables
+    elif resolved and isinstance(resolved, dict):
+        allowed_tables = resolved.get("tables")
+
     analytic_scenarios = data.get("analytic_scenarios", {})
-    scenario_list = [scenario[0] for scenario in analytic_scenarios.items()]
-    if not set(scenario_names).issubset(set(scenario_list)):
-        raise Exception("You provided invalid scenario name(s), please check and try again")
-    scenario_tables = data.get("scenario_tables", {})
-    scenario_context = "Following tables might be relevant to the question: \n"
+    scenario_tables_map = data.get("scenario_tables", {})
     all_tables = data.get("tables", {})
-    all_relationships = data.get("table_relationships", {})
-    all_relationships = {(relationship[0], relationship[1]):relationship[2] for relationship in all_relationships}
-    tables = set()
+    all_relationships_raw = data.get("table_relationships", [])
+    all_relationships = {
+        (relationship[0], relationship[1]): relationship[2]
+        for relationship in all_relationships_raw
+        if len(relationship) >= 3
+    }
+
+    scenario_hits: list[dict] = []
+    table_hits: list[dict] = []
+    faiss_context = ""
+    scenario_names: list[str] = []
+
+    try:
+        from schema_catalog import get_schema_catalog
+
+        catalog = get_schema_catalog()
+        if catalog.ready:
+            scenario_hits = catalog.search(
+                business_concepts,
+                get_embedding,
+                top_k=3,
+                type_filter="scenario",
+            )
+            scenario_names = [
+                h.get("scenario") for h in scenario_hits if h.get("scenario") in analytic_scenarios
+            ]
+
+            schema_hits = catalog.search(
+                business_concepts,
+                get_embedding,
+                allowed_tables=allowed_tables,
+                top_k=5,
+                type_filter=["table", "relationship"],
+            )
+            table_hits = schema_hits
+            if table_hits:
+                label = (
+                    "Schema catalog matches (scoped to resolved metric):\n"
+                    if allowed_tables
+                    else "Schema catalog matches:\n"
+                )
+                faiss_context = label
+                for h in table_hits:
+                    faiss_context += f"- {h.get('text', '')} (score={h.get('score', 0):.3f})\n"
+                faiss_context += "\n"
+    except Exception:
+        scenario_hits = []
+        table_hits = []
+
+    if not scenario_names:
+        scenario_names = _llm_pick_scenarios(business_concepts, data)
+        scenario_hits = [{"scenario": n, "score": None, "type": "scenario"} for n in scenario_names]
+
+    if allowed_tables:
+        allowed_norm = {
+            t.lower().replace("[", "").replace("]", "").replace(" ", "") for t in allowed_tables
+        }
+        kept_names: list[str] = []
+        kept_hits: list[dict] = []
+        hit_by_name = {h.get("scenario"): h for h in scenario_hits if h.get("scenario")}
+        for sn in scenario_names:
+            stabs = scenario_tables_map.get(sn, [])
+            if any(
+                t.lower().replace("[", "").replace("]", "").replace(" ", "") in allowed_norm
+                for t in stabs
+            ):
+                kept_names.append(sn)
+                kept_hits.append(hit_by_name.get(sn) or {"scenario": sn, "score": None, "type": "scenario"})
+        if kept_names:
+            scenario_names = kept_names
+            scenario_hits = kept_hits
+
+    if on_event:
+        hit_by_name = {h.get("scenario"): h for h in scenario_hits if h.get("scenario")}
+        on_event(
+            "context_retrieval",
+            {
+                "scenarios": [
+                    {
+                        "name": sn,
+                        "score": (hit_by_name.get(sn) or {}).get("score"),
+                    }
+                    for sn in scenario_names
+                ],
+                "tables": [
+                    {
+                        "table": h.get("table") or h.get("related") or "",
+                        "type": h.get("type"),
+                        "score": h.get("score"),
+                        "text": h.get("text", ""),
+                    }
+                    for h in table_hits
+                ],
+            },
+        )
+
+    scenario_context = "Following tables might be relevant to the question: \n"
+    tables: set[str] = set()
     for scenario_name in scenario_names:
-        tables.update(scenario_tables.get(scenario_name, []))
+        tables.update(scenario_tables_map.get(scenario_name, []))
     for table in tables:
-        scenario_context += f"- table_name: {table} - description: {all_tables[table]['description']} - columns: {all_tables[table]['columns']}\n"
-    table_pairs = [(table1, table2) for table1 in tables for table2 in tables if table1 != table2]
-    relationships = set()
-    for table_pair in table_pairs:
-        relationship = all_relationships.get(table_pair, None)
-        if relationship:
-            relationships.add((table_pair[0], table_pair[1], relationship)) 
-    
-    scenario_context += "\n"
-    scenario_context += "\nTable relationships: \n"
-    for relationship in relationships:
-        scenario_context += f"- {relationship[0]}, {relationship[1]}:{relationship[2]}\n"
-    
+        info = all_tables.get(table, {})
+        scenario_context += (
+            f"- table_name: {table} - description: {info.get('description', '')} "
+            f"- columns: {info.get('columns', [])}\n"
+        )
+
+    scenario_context += "\n\nTable relationships: \n"
+    for table1 in tables:
+        for table2 in tables:
+            if table1 == table2:
+                continue
+            relationship = all_relationships.get((table1, table2))
+            if relationship:
+                scenario_context += f"- {table1}, {table2}:{relationship}\n"
 
     scenario_context += "\nFollowing rules might be relevant: \n"
     for scenario_name in scenario_names:
-        scenario_context += f"- {scenario_name}: {str(analytic_scenarios[scenario_name]['rules'])}\n"
+        if scenario_name in analytic_scenarios:
+            scenario_context += f"- {scenario_name}: {str(analytic_scenarios[scenario_name]['rules'])}\n"
+
+    if faiss_context:
+        scenario_context = faiss_context + scenario_context
     return scenario_context
 
 today = pd.Timestamp.today()
@@ -574,13 +675,19 @@ def prepare_messages_for_api(history):
             clean["tool_call_id"] = msg["tool_call_id"]
         prepared.append(clean)
 
-    # Soft guardrails: append to system message on every API call (survives persona switches).
+    # Soft guardrails + semantic layer: append to system message on every API call.
     runtime = get_runtime()
     addon = getattr(runtime, "guardrail_prompt_addon", "") or ""
-    if addon and prepared and prepared[0].get("role") == "system":
+    semantic_addon = getattr(runtime, "semantic_prompt_addon", "") or ""
+    combined = addon
+    if semantic_addon:
+        combined = (combined + "\n\n" + semantic_addon) if combined else semantic_addon
+    if combined and prepared and prepared[0].get("role") == "system":
         base = prepared[0].get("content") or ""
-        if "## Active Guardrails" not in base:
-            prepared[0] = {**prepared[0], "content": base + addon}
+        if "## Active Guardrails" not in base and "## Semantic Layer Context" not in base:
+            prepared[0] = {**prepared[0], "content": base + combined}
+        elif "## Semantic Layer Context" not in base and semantic_addon:
+            prepared[0] = {**prepared[0], "content": base + "\n\n" + semantic_addon}
     return prepared
 
 
@@ -862,10 +969,15 @@ class Smart_Agent():
 import re
 
 def extract_sql_query(text):
-    # Regular expression to capture content between triple quotes (''' or """)
-    match = re.search(r"(?:''')(.*?)(?:''')", text, re.DOTALL)
-    if match:
-        query = match.group(1).strip()
-        return query
-    else:
+    """Extract SQL from triple-quoted strings in generated Python code."""
+    if not text:
         return None
+    pattern = r"(?:'''|\"\"\")(.*?)(?:'''|\"\"\")"
+    for match in re.finditer(pattern, text, re.DOTALL):
+        query = match.group(1).strip()
+        if re.match(r"(?is)^(WITH|SELECT|INSERT|UPDATE|DELETE|CREATE)\b", query):
+            return query
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group(1).strip() or None
+    return None

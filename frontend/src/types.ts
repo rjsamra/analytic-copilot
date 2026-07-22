@@ -1,11 +1,15 @@
 export type PipelineStepId =
   | "understand"
   | "guardrails"
+  | "resolve"
   | "plan"
   | "context"
   | "generate"
+  | "validate"
   | "execute"
-  | "respond";
+  | "sanity"
+  | "respond"
+  | "confirm";
 
 export type StepStatus = "idle" | "active" | "complete" | "error";
 
@@ -20,11 +24,19 @@ export interface PipelineStep {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "clarification";
   content: string;
   displays?: DisplayPayload[];
   sql?: string | null;
   code?: string;
+  resolution?: ResolutionPayload | null;
+  sanity?: SanityResult | null;
+  awaitingConfirmation?: boolean;
+  cacheEligible?: boolean;
+  feedbackSubmitted?: FeedbackVerdict | null;
+  clarification?: ClarificationPayload | null;
+  pendingApproval?: boolean;
+  proposalId?: string | null;
 }
 
 export interface DisplayPayload {
@@ -72,6 +84,116 @@ export interface GuardrailCheck {
   detail: string;
 }
 
+export interface UserProfile {
+  id: string;
+  display_name: string;
+  role: string;
+  region: string;
+  territory_ids?: string[];
+  metric_defaults?: Record<string, string>;
+}
+
+export interface ClarificationOption {
+  id: string;
+  label: string;
+  description: string;
+  recommended?: boolean;
+  metric_id?: string;
+}
+
+export interface ClarificationPayload {
+  id: string;
+  question: string;
+  options: ClarificationOption[];
+}
+
+export interface ResolutionPayload {
+  status: string;
+  metric_id?: string;
+  metric_label?: string;
+  time_dimension?: string;
+  time_dimension_label?: string;
+  time_range?: [string, string] | null;
+  time_range_label?: string;
+  scope_filters?: string[];
+  scope_label?: string;
+  assumptions?: string[];
+  tables?: string[];
+  cache_hit?: boolean;
+}
+
+export interface ValidationCheck {
+  name: string;
+  status: string;
+  detail: string;
+}
+
+export interface SanityResult {
+  row_count: number;
+  date_range: string | null;
+  warnings: string[];
+}
+
+export interface ContextScenarioHit {
+  name: string;
+  score?: number | null;
+}
+
+export interface ContextTableHit {
+  table: string;
+  type?: string;
+  score?: number | null;
+  text?: string;
+}
+
+export interface ContextRetrieval {
+  scenarios: ContextScenarioHit[];
+  tables: ContextTableHit[];
+}
+
+export interface DraftMetric {
+  id: string;
+  label: string;
+  description?: string;
+  expression: string;
+  from_clause: string;
+  time_dimension?: string;
+  time_dimension_label?: string;
+  required_filters?: string[];
+  tables?: string[];
+  synonyms?: string[];
+  ambiguities?: string[];
+  select_label: string;
+}
+
+export type ProposalStatus = "pending" | "approved" | "rejected";
+
+export interface MetricProposal {
+  id: string;
+  status: ProposalStatus;
+  question: string;
+  proposed_sql: string;
+  draft_metric: DraftMetric;
+  scenario_hits?: ContextScenarioHit[];
+  profile_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  reject_reason?: string | null;
+  approved_metric_id?: string;
+}
+
+export interface SemanticContext {
+  profileId?: string;
+  displayName?: string;
+  role?: string;
+  region?: string;
+  defaults?: Record<string, string>;
+  resolution?: ResolutionPayload | null;
+  cacheStatus?: "miss" | "hit" | "stored" | null;
+}
+
+export type FeedbackVerdict = "correct" | "wrong_metric" | "wrong_scope";
+
 export interface StreamEvent {
   type: string;
   step?: PipelineStepId;
@@ -89,6 +211,34 @@ export interface StreamEvent {
   status?: GuardrailCheckStatus;
   guardrail_type?: string;
   guardrail_blocked?: boolean;
+  profile_id?: string;
+  display_name?: string;
+  role?: string;
+  region?: string;
+  defaults?: Record<string, string>;
+  metric_id?: string;
+  cached_at?: string;
+  expires_at?: string;
+  checks?: ValidationCheck[];
+  row_count?: number;
+  date_range?: string | null;
+  warnings?: string[];
+  resolution?: ResolutionPayload;
+  sanity?: SanityResult;
+  validation?: { passed: boolean; checks: ValidationCheck[] };
+  awaiting_confirmation?: boolean;
+  awaiting_clarification?: boolean;
+  cache_eligible?: boolean;
+  clarification?: ClarificationPayload;
+  question?: string;
+  options?: ClarificationOption[];
+  scenarios?: ContextScenarioHit[];
+  tables?: ContextTableHit[];
+  pending_approval?: boolean;
+  proposal_id?: string;
+  proposed_sql?: string;
+  draft_metric?: DraftMetric;
+  scenario_hits?: ContextScenarioHit[];
 }
 
 export const PIPELINE_STEPS: Omit<PipelineStep, "status" | "detail" | "code">[] = [
@@ -103,14 +253,19 @@ export const PIPELINE_STEPS: Omit<PipelineStep, "status" | "detail" | "code">[] 
     description: "Parse natural language question",
   },
   {
+    id: "resolve",
+    label: "Resolve",
+    description: "Match metric, persona scope & cache lookup",
+  },
+  {
     id: "plan",
     label: "Plan",
-    description: "Choose analyst persona & strategy",
+    description: "Apply selected persona (or agent planner on fallback)",
   },
   {
     id: "context",
     label: "Context",
-    description: "Retrieve schemas, tables & business rules",
+    description: "Retrieve schemas, tables & business rules (or use metric scope)",
   },
   {
     id: "generate",
@@ -118,14 +273,29 @@ export const PIPELINE_STEPS: Omit<PipelineStep, "status" | "detail" | "code">[] 
     description: "Write SQL + Python analysis code",
   },
   {
+    id: "validate",
+    label: "Validate",
+    description: "Pre-SQL semantic & safety checks",
+  },
+  {
     id: "execute",
     label: "Execute",
     description: "Run query against SQLite & render viz",
   },
   {
+    id: "sanity",
+    label: "Sanity",
+    description: "Post-execution result checks",
+  },
+  {
     id: "respond",
     label: "Respond",
     description: "Summarize insights for the user",
+  },
+  {
+    id: "confirm",
+    label: "Confirm",
+    description: "Await your validation feedback",
   },
 ];
 

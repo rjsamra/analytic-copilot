@@ -1,0 +1,53 @@
+{
+  "profiles": [
+    {
+      "id": "regional_manager_we",
+      "display_name": "Regional Manager — Western Europe",
+      "role": "Regional Sales Manager",
+      "region": "Western Europe",
+      "territory_ids": [],
+      "timezone": "Europe/Berlin",
+      "metric_defaults": {
+        "revenue": "recognized_revenue",
+        "sales": "recognized_revenue",
+        "profit": "gross_profit"
+      },
+      "mandatory_filters": {
+        "type": "ship_country",
+        "region_key": "Western Europe"
+      }
+    },
+    {
+      "id": "finance_global",
+      "display_name": "Finance Analyst — Global",
+      "role": "Finance Analyst",
+      "region": "Global",
+      "territory_ids": [],
+      "timezone": "UTC",
+      "metric_defaults": {
+        "revenue": "booked_revenue",
+        "sales": "booked_revenue",
+        "profit": "gross_profit"
+      },
+      "mandatory_filters": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "ops_manager",
+      "display_name": "Operations Manager — North America",
+      "role": "Operations Manager",
+      "region": "North America",
+      "territory_ids": [],
+      "timezone": "America/New_York",
+      "metric_defaults": {
+        "revenue": "recognized_revenue",
+        "orders": "order_count"
+      },
+      "mandatory_filters": {
+        "type": "ship_country",
+        "region_key": "North America"
+      }
+    }
+  ]
+}

@@ -139,14 +139,77 @@ streamlit run copilot.py
 
 ## Sample questions
 
+- **Give me revenue of last month** — triggers semantic resolution; pick a persona to see different SQL
 - What were the total sales for each year available in the database?
-- Who are the top 5 customers by order volume, and what is the total number of orders for each?
-- What are the top 10 most popular products based on quantity sold?
-- What are the total sales broken down by country?
+- Who are the top 5 customers by order volume?
+- What is the order count for last month?
 
 ---
 
-## Pipeline stages (UI)
+## User semantic layer (persona demo)
+
+Select a **persona** in the header before asking questions. The same natural-language question can compile to **different SQL** depending on role, region, and metric defaults.
+
+| Persona | Default revenue | Scope |
+| --- | --- | --- |
+| Regional Manager — Western Europe | Recognized (ShippedDate) | ShipCountry: Germany, France, UK, … |
+| Finance Analyst — Global | Booked (OrderDate) | Company-wide |
+| Operations Manager — North America | Order count | ShipCountry USA |
+
+### Pipeline stages (extended)
+
+With **Show pipeline** enabled:
+
+1. **Guardrails** — safety & policy checks  
+2. **Understand** — parse the question  
+3. **Resolve** — match metric, persona scope, cache lookup  
+4. **Plan** — analyst persona & strategy  
+5. **Context** — scoped schema retrieval (FAISS + metadata)  
+6. **Generate** — SQL + Python  
+7. **Validate** — pre-SQL semantic checks  
+8. **Execute** — run query & visualize  
+9. **Sanity** — post-execution row/date warnings  
+10. **Respond** — natural-language summary  
+11. **Confirm** — your feedback (Looks correct / Wrong metric / Wrong scope)
+
+### Clarification & cache
+
+- Ambiguous metrics (e.g. revenue → Recognized vs Booked) show **in-chat option chips** before SQL runs.
+- Every data response shows an **Assumptions** card and **feedback bar**.
+- Click **Looks correct** to cache the approved query for **14 days** (per persona).
+- Repeat the same question to see a **CACHE HIT** in the Resolve step.
+- Relative phrases like **last month** are anchored to the **latest date in the database** (not today's calendar), so they resolve to periods with actual Northwind data (e.g. October 2023).
+
+### Dual semantic layers & Approvals
+
+- **Layer A** — approved metrics in `metrics.json` (fast path: resolve → compile → execute).
+- **Layer B** — when no metric matches, the agent generates SQL and queues a proposal in `pending_metrics.json`.
+- Open the **Approvals** tab to edit SQL / draft metric fields, then **Approve** (promotes into `metrics.json` + query cache) or **Reject**.
+- Context step shows **scenario RAG** hits (vector search over `metadata.json` scenarios) and schema table hits.
+
+### Semantic layer files
+
+| Path | Role |
+| --- | --- |
+| `data/semantic_layer/metrics.json` | Canonical metric definitions (Layer A) |
+| `data/semantic_layer/pending_metrics.json` | Analyst approval queue (Layer B) |
+| `data/semantic_layer/dimensions.json` | Time grains & region mappings |
+| `data/user_profiles.json` | Demo personas |
+| `semantic_layer.py` | Resolve, compile, validate, sanity, promote |
+| `pending_metrics.py` | Proposal CRUD + approve/reject |
+| `query_cache.py` | 14-day approved query cache |
+| `schema_catalog.py` | FAISS search for tables, relationships & scenarios |
+
+Build the schema index (required after metadata changes so scenario vectors are embedded):
+
+```bash
+source .venv/bin/activate
+python scripts/build_schema_index.py
+```
+
+---
+
+## Pipeline stages (UI) — legacy overview
 
 With **Show pipeline** enabled, the right panel streams:
 
@@ -156,7 +219,6 @@ With **Show pipeline** enabled, the right panel streams:
 4. **Generate** — write SQL + Python analysis code  
 5. **Execute** — run against SQLite & render visualization  
 6. **Respond** — summarize insights for the user  
-
 
 ---
 

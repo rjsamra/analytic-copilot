@@ -1,0 +1,97 @@
+{
+  "metrics": {
+    "recognized_revenue": {
+      "label": "Recognized Revenue",
+      "description": "Revenue recognized when an order is shipped.",
+      "expression": "SUM(od.UnitPrice * od.Quantity * (1 - od.Discount))",
+      "from_clause": "orders o JOIN [Order Details] od ON o.OrderID = od.OrderID",
+      "time_dimension": "o.ShippedDate",
+      "time_dimension_label": "Shipped Date",
+      "required_filters": [
+        "o.ShippedDate IS NOT NULL"
+      ],
+      "tables": [
+        "orders",
+        "[Order Details]"
+      ],
+      "synonyms": [
+        "revenue",
+        "sales",
+        "turnover",
+        "total sales",
+        "recognized revenue"
+      ],
+      "ambiguities": [
+        "booked_revenue"
+      ],
+      "select_label": "recognized_revenue"
+    },
+    "booked_revenue": {
+      "label": "Booked Revenue",
+      "description": "Revenue booked when an order is placed.",
+      "expression": "SUM(od.UnitPrice * od.Quantity * (1 - od.Discount))",
+      "from_clause": "orders o JOIN [Order Details] od ON o.OrderID = od.OrderID",
+      "time_dimension": "o.OrderDate",
+      "time_dimension_label": "Order Date",
+      "required_filters": [],
+      "tables": [
+        "orders",
+        "[Order Details]"
+      ],
+      "synonyms": [
+        "booked revenue",
+        "bookings",
+        "order revenue",
+        "booked sales"
+      ],
+      "ambiguities": [
+        "recognized_revenue"
+      ],
+      "select_label": "booked_revenue"
+    },
+    "gross_profit": {
+      "label": "Gross Profit",
+      "description": "Gross profit using unit price minus discount (cost proxy not available in Northwind).",
+      "expression": "SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) - SUM(p.UnitPrice * od.Quantity * 0.5)",
+      "from_clause": "orders o JOIN [Order Details] od ON o.OrderID = od.OrderID JOIN products p ON od.ProductID = p.ProductID",
+      "time_dimension": "o.ShippedDate",
+      "time_dimension_label": "Shipped Date",
+      "required_filters": [
+        "o.ShippedDate IS NOT NULL"
+      ],
+      "tables": [
+        "orders",
+        "[Order Details]",
+        "products"
+      ],
+      "synonyms": [
+        "profit",
+        "gross profit",
+        "margin",
+        "profitability"
+      ],
+      "ambiguities": [],
+      "select_label": "gross_profit"
+    },
+    "order_count": {
+      "label": "Order Count",
+      "description": "Count of distinct orders placed.",
+      "expression": "COUNT(DISTINCT o.OrderID)",
+      "from_clause": "orders o",
+      "time_dimension": "o.OrderDate",
+      "time_dimension_label": "Order Date",
+      "required_filters": [],
+      "tables": [
+        "orders"
+      ],
+      "synonyms": [
+        "order count",
+        "number of orders",
+        "orders",
+        "order volume"
+      ],
+      "ambiguities": [],
+      "select_label": "order_count"
+    }
+  }
+}

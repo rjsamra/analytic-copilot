@@ -81,7 +81,7 @@ function ChartView({ display, fallbackTable }: { display?: DisplayPayload; fallb
       }
     >
       <Plot
-        data={plotlySpec.data}
+        data={plotlySpec.data as object[]}
         layout={{
           ...plotlySpec.layout,
           paper_bgcolor: "transparent",

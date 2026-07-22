@@ -1,0 +1,48 @@
+{
+  "proposals": [
+    {
+      "id": "pend-0c101882d0",
+      "status": "pending",
+      "question": "How many discontinued products?",
+      "proposed_sql": "SELECT COUNT(*) AS DiscontinuedProductCount\nFROM products\nWHERE Discontinued = 1;",
+      "draft_metric": {
+        "id": "how_many_discontinued_products",
+        "label": "How many discontinued products?",
+        "description": "Proposed from question: How many discontinued products?",
+        "expression": "",
+        "from_clause": "",
+        "time_dimension": "",
+        "time_dimension_label": "",
+        "required_filters": [],
+        "tables": [
+          "products"
+        ],
+        "synonyms": [
+          "many",
+          "discontinued",
+          "products"
+        ],
+        "ambiguities": [],
+        "select_label": "how_many_discontinued_products"
+      },
+      "scenario_hits": [
+        {
+          "name": "Product Profitability",
+          "score": 0.7819489240646362
+        },
+        {
+          "name": "Product Category Sales Trends",
+          "score": 0.7667489051818848
+        },
+        {
+          "name": "Customer Retention",
+          "score": 0.7654639482498169
+        }
+      ],
+      "profile_id": "regional_manager_we",
+      "created_at": "2026-07-22T14:16:19+00:00",
+      "updated_at": "2026-07-22T14:22:49+00:00",
+      "reject_reason": null
+    }
+  ]
+}

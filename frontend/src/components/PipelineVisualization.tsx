@@ -1,5 +1,11 @@
 import { motion, AnimatePresence } from "framer-motion";
-import type { Guardrail, GuardrailCheck, PipelineStep } from "../types";
+import type {
+  ContextRetrieval,
+  Guardrail,
+  GuardrailCheck,
+  PipelineStep,
+  ValidationCheck,
+} from "../types";
 import { GUARDRAIL_TYPE_LABELS } from "../types";
 
 interface Props {
@@ -8,6 +14,10 @@ interface Props {
   sql?: string | null;
   attachedGuardrails?: Guardrail[];
   guardrailChecks?: GuardrailCheck[];
+  validationChecks?: ValidationCheck[];
+  sanityWarnings?: string[];
+  cacheHit?: boolean;
+  contextRetrieval?: ContextRetrieval | null;
 }
 
 const statusStyles = {
@@ -31,6 +41,7 @@ const checkStyles: Record<string, string> = {
   capped: "text-amber-300",
   skipped: "text-slate-400",
   pending: "text-slate-500",
+  failed: "text-red-300",
 };
 
 export default function PipelineVisualization({
@@ -39,6 +50,10 @@ export default function PipelineVisualization({
   sql,
   attachedGuardrails = [],
   guardrailChecks = [],
+  validationChecks = [],
+  sanityWarnings = [],
+  cacheHit = false,
+  contextRetrieval = null,
 }: Props) {
   const activeStep = steps.find((s) => s.status === "active");
   const checkById = new Map(guardrailChecks.map((c) => [c.id, c]));
@@ -123,7 +138,12 @@ export default function PipelineVisualization({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold">{step.label}</span>
-                      <span className="text-xs uppercase tracking-wide opacity-70">
+                      <span className="flex items-center gap-2 text-xs uppercase tracking-wide opacity-70">
+                        {step.id === "resolve" && cacheHit && (
+                          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                            CACHE HIT
+                          </span>
+                        )}
                         {step.status}
                       </span>
                     </div>
@@ -143,16 +163,63 @@ export default function PipelineVisualization({
                     </AnimatePresence>
 
                     {step.id === "guardrails" && guardrailChecks.length > 0 && (
+                      <CheckList
+                        checks={guardrailChecks.map((c) => ({
+                          name: c.name,
+                          status: c.status,
+                          detail: c.detail,
+                        }))}
+                      />
+                    )}
+
+                    {step.id === "context" && contextRetrieval && (
+                      <div className="mt-2 space-y-2 text-xs">
+                        {contextRetrieval.scenarios.length > 0 && (
+                          <div>
+                            <div className="mb-1 font-medium opacity-80">Scenario RAG</div>
+                            <ul className="space-y-1">
+                              {contextRetrieval.scenarios.map((s) => (
+                                <li key={s.name} className="opacity-90">
+                                  <span className="text-sky-300">{s.name}</span>
+                                  {s.score != null && (
+                                    <span className="ml-2 opacity-60">
+                                      score {Number(s.score).toFixed(3)}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {contextRetrieval.tables.length > 0 && (
+                          <div>
+                            <div className="mb-1 font-medium opacity-80">Schema hits</div>
+                            <ul className="space-y-1">
+                              {contextRetrieval.tables.map((t, i) => (
+                                <li key={`${t.table}-${i}`} className="opacity-90">
+                                  <span className="text-emerald-300">{t.table || t.type}</span>
+                                  {t.score != null && (
+                                    <span className="ml-2 opacity-60">
+                                      score {Number(t.score).toFixed(3)}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {step.id === "validate" && validationChecks.length > 0 && (
+                      <CheckList checks={validationChecks} />
+                    )}
+
+                    {step.id === "sanity" && sanityWarnings.length > 0 && (
                       <ul className="mt-2 space-y-1">
-                        {guardrailChecks.map((c) => (
-                          <li key={`${c.id}-${c.status}`} className="text-xs">
-                            <span className={checkStyles[c.status] || checkStyles.pending}>
-                              [{c.status}]
-                            </span>{" "}
-                            <span className="opacity-90">{c.name}</span>
-                            {c.detail ? (
-                              <span className="opacity-70"> — {c.detail}</span>
-                            ) : null}
+                        {sanityWarnings.map((w) => (
+                          <li key={w} className="text-xs text-amber-300">
+                            ⚠ {w}
                           </li>
                         ))}
                       </ul>
@@ -187,7 +254,7 @@ export default function PipelineVisualization({
                 </pre>
               </div>
             )}
-            {activeCode && (
+            {activeCode && (!sql || normalizeCode(activeCode) !== normalizeCode(sql)) && (
               <pre className="max-h-40 overflow-auto rounded-lg bg-surface-950 p-3 font-mono text-xs text-slate-300">
                 <TypingCode code={activeCode} />
               </pre>
@@ -197,6 +264,24 @@ export default function PipelineVisualization({
       </AnimatePresence>
     </div>
   );
+}
+
+function CheckList({ checks }: { checks: { name: string; status: string; detail?: string }[] }) {
+  return (
+    <ul className="mt-2 space-y-1">
+      {checks.map((c) => (
+        <li key={`${c.name}-${c.status}`} className="text-xs">
+          <span className={checkStyles[c.status] || checkStyles.pending}>[{c.status}]</span>{" "}
+          <span className="opacity-90">{c.name}</span>
+          {c.detail ? <span className="opacity-70"> — {c.detail}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function normalizeCode(code: string): string {
+  return code.replace(/^['"]{3}|['"]{3}$/g, "").trim();
 }
 
 function TypingCode({ code }: { code: string }) {
