@@ -60,6 +60,10 @@ class ResolutionResult:
     time_dimension_label: str | None = None
     time_range: tuple[str, str] | None = None
     time_range_label: str | None = None
+    # Stable period id for cache keys: "last_month", "2023-10", etc.
+    time_key: str | None = None
+    # SQLite date expressions for relative periods (preferred over literal time_range in SQL).
+    time_range_expr: tuple[str, str] | None = None
     group_by_grain: str | None = None  # "year" | "month" | "quarter"
     scope_filters: list[str] = field(default_factory=list)
     scope_joins: list[str] = field(default_factory=list)
@@ -80,6 +84,7 @@ class ResolutionResult:
             "time_dimension_label": self.time_dimension_label,
             "time_range": list(self.time_range) if self.time_range else None,
             "time_range_label": self.time_range_label,
+            "time_key": self.time_key,
             "group_by_grain": self.group_by_grain,
             "scope_filters": self.scope_filters,
             "scope_label": self.scope_label,
@@ -351,6 +356,12 @@ def _detect_metric_intent(question: str, profile: UserProfile) -> tuple[list[str
     return [top_id], top_score
 
 
+# Shared data-as-of anchor used by relative period SQL (same source as _get_data_reference_date).
+_DATA_ANCHOR_SQL = (
+    "(SELECT DATE(MAX(ShippedDate)) FROM Orders WHERE ShippedDate IS NOT NULL)"
+)
+
+
 def _get_data_reference_date() -> datetime.date:
     """Anchor relative time phrases to the latest data in Northwind, not wall-clock today."""
     import os
@@ -373,7 +384,40 @@ def _get_data_reference_date() -> datetime.date:
     return datetime(2023, 10, 28).date()
 
 
-def _parse_time_range(question: str, profile: UserProfile) -> tuple[tuple[str, str] | None, str | None]:
+def _relative_month_sql(offset_months: int) -> tuple[str, str]:
+    """Inclusive start/end SQL expressions for a month offset from the data anchor."""
+    start = f"DATE({_DATA_ANCHOR_SQL}, 'start of month', '{offset_months:+d} months')"
+    end = (
+        f"DATE({_DATA_ANCHOR_SQL}, 'start of month', "
+        f"'{offset_months + 1:+d} months', '-1 day')"
+    )
+    return start, end
+
+
+def _relative_year_sql(offset_years: int) -> tuple[str, str]:
+    """Inclusive start/end SQL expressions for a year offset from the data anchor."""
+    start = f"DATE({_DATA_ANCHOR_SQL}, 'start of year', '{offset_years:+d} years')"
+    end = (
+        f"DATE({_DATA_ANCHOR_SQL}, 'start of year', "
+        f"'{offset_years + 1:+d} years', '-1 day')"
+    )
+    return start, end
+
+
+def _parse_time_range(
+    question: str, profile: UserProfile
+) -> tuple[
+    tuple[str, str] | None,
+    str | None,
+    str | None,
+    tuple[str, str] | None,
+]:
+    """Return (absolute_bounds, label, time_key, sql_expr_bounds).
+
+    Absolute bounds are for display/assumptions. Relative grains also return
+    SQL expressions anchored to MAX(ShippedDate) so cached SQL stays dynamic
+    while still resolving to Northwind's 2023 data window.
+    """
     q = _normalize(question)
     dims = load_dimensions()
     ref = _get_data_reference_date()
@@ -391,9 +435,10 @@ def _parse_time_range(question: str, profile: UserProfile) -> tuple[tuple[str, s
             last_day = calendar.monthrange(year, num)[1]
             start = f"{year:04d}-{num:02d}-01"
             end = f"{year:04d}-{num:02d}-{last_day:02d}"
-            return (start, end), f"{name.title()} {year} ({start} to {end})"
+            time_key = f"{year:04d}-{num:02d}"
+            return (start, end), f"{name.title()} {year} ({start} to {end})", time_key, None
 
-    for _key, grain in (dims.get("time_grains") or {}).items():
+    for key, grain in (dims.get("time_grains") or {}).items():
         for pat in grain.get("patterns", []):
             if pat in q:
                 if "offset_months" in grain:
@@ -411,26 +456,27 @@ def _parse_time_range(question: str, profile: UserProfile) -> tuple[tuple[str, s
                     start = f"{year:04d}-{month:02d}-01"
                     end = f"{year:04d}-{month:02d}-{last_day:02d}"
                     label = f"{grain['label']} ({start} to {end}, anchored to data through {ref})"
-                    return (start, end), label
+                    return (start, end), label, key, _relative_month_sql(offset)
                 if "offset_years" in grain:
                     offset = grain["offset_years"]
                     year = ref.year + offset
                     start = f"{year:04d}-01-01"
                     end = f"{year:04d}-12-31"
                     label = f"{grain['label']} ({year}, anchored to data through {ref})"
-                    return (start, end), label
+                    return (start, end), label, key, _relative_year_sql(offset)
 
-    return None, None
+    return None, None, None, None
 
 
 def _params_hash(
     metric_id: str,
     profile_id: str,
-    time_range: tuple[str, str] | None,
+    time_key: str | None,
     scope_key: str,
     group_by_grain: str | None = None,
 ) -> str:
-    raw = f"{profile_id}|{metric_id}|{time_range}|{scope_key}|{group_by_grain or ''}"
+    # Hash the stable period key (e.g. last_month), not resolved absolute dates.
+    raw = f"{profile_id}|{metric_id}|{time_key or ''}|{scope_key}|{group_by_grain or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -508,7 +554,9 @@ def resolve_metric(
     if group_by_grain and not metric.get("time_dimension"):
         return ResolutionResult(status="no_metric")
 
-    time_range, time_label = _parse_time_range(question, user_profile)
+    time_range, time_label, time_key, time_range_expr = _parse_time_range(
+        question, user_profile
+    )
     extra_joins, scope_filters, extra_tables = build_scope_filters(user_profile)
 
     tables = list(set(metric.get("tables", []) + extra_tables))
@@ -527,7 +575,7 @@ def resolve_metric(
     assumptions.append(f"Time anchor: latest data through {ref}")
 
     scope_key = "|".join(scope_filters)
-    phash = _params_hash(metric_id, user_profile.id, time_range, scope_key, group_by_grain)
+    phash = _params_hash(metric_id, user_profile.id, time_key, scope_key, group_by_grain)
 
     result = ResolutionResult(
         status="ready",
@@ -537,6 +585,8 @@ def resolve_metric(
         time_dimension_label=metric.get("time_dimension_label"),
         time_range=time_range,
         time_range_label=time_label,
+        time_key=time_key,
+        time_range_expr=time_range_expr,
         group_by_grain=group_by_grain,
         scope_filters=scope_filters,
         scope_joins=extra_joins,
@@ -582,12 +632,21 @@ def compile_sql(resolution: ResolutionResult) -> CompiledQuery | None:
     where_parts = list(metric.get("required_filters") or [])
     where_parts.extend(scope_filters)
 
-    if resolution.time_range and resolution.time_dimension:
-        start, end = resolution.time_range
-        where_parts.append(
-            f"DATE({resolution.time_dimension}) >= '{start}' "
-            f"AND DATE({resolution.time_dimension}) <= '{end}'"
-        )
+    if resolution.time_dimension and (
+        resolution.time_range_expr or resolution.time_range
+    ):
+        if resolution.time_range_expr:
+            start, end = resolution.time_range_expr
+            where_parts.append(
+                f"DATE({resolution.time_dimension}) >= {start} "
+                f"AND DATE({resolution.time_dimension}) <= {end}"
+            )
+        else:
+            start, end = resolution.time_range  # type: ignore[misc]
+            where_parts.append(
+                f"DATE({resolution.time_dimension}) >= '{start}' "
+                f"AND DATE({resolution.time_dimension}) <= '{end}'"
+            )
 
     where_sql = ""
     if where_parts:
